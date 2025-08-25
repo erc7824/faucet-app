@@ -12,7 +12,7 @@ type Config struct {
 
 	OwnerPrivateKey   string `env:"OWNER_PRIVATE_KEY" env-required:"true" env-description:"Private key for faucet wallet (without 0x prefix)"`
 	ClearnodeURL      string `env:"CLEARNODE_URL" env-required:"true" env-description:"Clearnode WebSocket URL"`
-	TokenAddress      string `env:"TOKEN_ADDRESS" env-required:"true" env-description:"Token contract address"`
+	TokenSymbol       string `env:"TOKEN_SYMBOL" env-required:"true" env-description:"Token symbol to distribute (e.g., usdc, weth)"`
 	StandardTipAmount string `env:"STANDARD_TIP_AMOUNT" env-required:"true" env-description:"Default amount to send per request"`
 
 	LogLevel string `env:"LOG_LEVEL" env-default:"info" env-description:"Logging level (debug, info, warn, error)"`

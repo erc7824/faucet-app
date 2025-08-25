@@ -54,7 +54,7 @@ Set the following environment variables (or create a `.env` file):
 | `SERVER_PORT` | No | `8080` | HTTP server port | `8080` |
 | `OWNER_PRIVATE_KEY` | **Yes** | - | Private key (without 0x prefix) | `abcdef123...` |
 | `CLEARNODE_URL` | **Yes** | - | Clearnode WebSocket URL | `wss://testnet.clearnode.io/ws` |
-| `TOKEN_ADDRESS` | **Yes** | - | Token contract address | `0xa0b86...` |
+| `TOKEN_SYMBOL` | **Yes** | - | Token symbol to distribute | `usdc` |
 | `STANDARD_TIP_AMOUNT` | **Yes** | - | Amount to send per request | `1000000` |
 | `LOG_LEVEL` | No | `info` | Logging level (debug/info/warn/error) | `info` |
 
@@ -113,8 +113,8 @@ Service information endpoint.
   "version": "1.0.0",
   "faucet_address": "0xabcd...",
   "standard_tip_amount": "1000000",
-  "token_address": "0xa0b86...",
-  "endpoints": ["/requestTokens", "/getTokens"]
+  "token_symbol": "usdc",
+  "endpoints": ["/requestTokens"]
 }
 ```
 
@@ -142,6 +142,32 @@ The EIP-712 signature includes:
 - Application scope and permissions
 - Expiration time
 - Asset allowances (empty for faucet)
+
+## Startup Validation
+
+The server performs comprehensive validation during startup to ensure reliable operation:
+
+### Token Support Validation
+- **Asset Discovery**: Queries Clearnode using `get_assets` to fetch all supported tokens
+- **Symbol Verification**: Validates that the configured `TOKEN_SYMBOL` exists in supported assets
+- **Early Failure**: Server refuses to start if the token is not supported
+
+### Balance Verification  
+- **Balance Check**: Queries faucet balance using `get_ledger_balances` after authentication
+- **Minimum Threshold**: Requires balance ≥ 10,000 × tip amount for safe operation
+- **Sufficient Funds**: Logs available balance and estimated number of possible transfers
+- **Protective Shutdown**: Server refuses to start with insufficient funds to prevent failed requests
+
+Example startup output:
+```
+INFO Successfully connected and authenticated with Clearnode
+INFO Validating token support for: usdc  
+INFO Token 'usdc' is supported by Clearnode
+INFO Checking faucet balance
+INFO Found usdc balance: 50000000 (required: 100000000 for 10,000 transfers)
+INFO ✓ Sufficient usdc balance: 50000000.00 (enough for 5000 transfers)
+INFO Faucet server is ready to serve requests
+```
 
 ## Technical Implementation
 

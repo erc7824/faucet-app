@@ -88,7 +88,7 @@ func (s *Server) getInfo(c *gin.Context) {
 		"version":             "1.0.0",
 		"faucet_address":      s.clearnodeClient.GetAddress(),
 		"standard_tip_amount": s.config.StandardTipAmount,
-		"token_address":       s.config.TokenAddress,
+		"token_symbol":        s.config.TokenSymbol,
 		"endpoints":           []string{"/requestTokens"},
 	})
 }
@@ -125,10 +125,10 @@ func (s *Server) requestTokens(c *gin.Context) {
 		return
 	}
 
-	// TODO: replace `tokenAddress` with `asset` name and check whether it is approved by the Clearnode on the startup
-	asset := s.getAssetName(s.config.TokenAddress)
+	// Use the configured token symbol directly (validation done at startup)
+	asset := s.config.TokenSymbol
 
-	response, err := s.clearnodeClient.Transfer(
+	result, err := s.clearnodeClient.Transfer(
 		userAddress,
 		asset,
 		s.config.StandardTipAmount,
@@ -141,42 +141,17 @@ func (s *Server) requestTokens(c *gin.Context) {
 		return
 	}
 
-	// Extract transaction ID from response if available
-	txID := ""
-	if transactions, ok := response.Data["transactions"].([]interface{}); ok && len(transactions) > 0 {
-		if tx, ok := transactions[0].(map[string]interface{}); ok {
-			if id, ok := tx["id"].(string); ok {
-				txID = id
-			}
-		}
-	}
-
 	logger.Infof("Successfully sent %s %s to %s (txID: %s)",
-		s.config.StandardTipAmount, asset, userAddress, txID)
+		result.Amount, result.Asset, result.Destination, result.TransactionID)
 
 	c.JSON(http.StatusOK, FaucetResponse{
 		Success:     true,
 		Message:     "Tokens sent successfully",
-		TxID:        txID,
-		Amount:      s.config.StandardTipAmount,
-		Asset:       asset,
-		Destination: userAddress,
+		TxID:        result.TransactionID,
+		Amount:      result.Amount,
+		Asset:       result.Asset,
+		Destination: result.Destination,
 	})
-}
-
-func (s *Server) getAssetName(tokenAddress string) string {
-	// This is a simplified mapping. In a production system,
-	// you might want to query the Clearnode for supported assets
-	// or maintain a more comprehensive mapping.
-	switch strings.ToLower(tokenAddress) {
-	case "0xa0b86a33e6ba77b8f16c0d15b9a11d2fe7f0c5e5": // Example USDC address
-		return "usdc"
-	case "0x4200000000000000000000000000000000000006": // Example WETH address
-		return "weth"
-	default:
-		// Default to a generic token name or the address itself
-		return "token"
-	}
 }
 
 func (s *Server) Start() error {

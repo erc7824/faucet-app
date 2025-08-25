@@ -51,6 +51,27 @@ type RPCResponse struct {
 	Timestamp uint64                 `json:"timestamp"`
 }
 
+// Structured response types
+type Asset struct {
+	Token    string `json:"token"`
+	ChainID  int    `json:"chain_id"`
+	Symbol   string `json:"symbol"`
+	Decimals int    `json:"decimals"`
+}
+
+type Balance struct {
+	Asset  string `json:"asset"`
+	Amount string `json:"amount"`
+}
+
+type TransferResult struct {
+	TransactionID string `json:"transaction_id"`
+	Amount        string `json:"amount"`
+	Asset         string `json:"asset"`
+	Destination   string `json:"destination"`
+	Status        string `json:"status"`
+}
+
 type TransferRequest struct {
 	Destination string       `json:"destination"`
 	Allocations []Allocation `json:"allocations"`
@@ -218,7 +239,53 @@ func (c *Client) Authenticate() error {
 	}
 }
 
-func (c *Client) Transfer(destination, asset, amount string) (*RPCResponse, error) {
+func (c *Client) GetAssets() ([]Asset, error) {
+	if !c.isConnected.Load() {
+		return nil, fmt.Errorf("client is not connected")
+	}
+
+	logger.Debug("Fetching supported assets from Clearnode")
+
+	response, err := c.sendRequest("get_assets", map[string]interface{}{})
+	if err != nil {
+		return nil, fmt.Errorf("get_assets failed: %w", err)
+	}
+
+	logger.Debug("Successfully fetched supported assets")
+
+	// Parse the response data
+	assets, err := c.parseAssets(response.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse assets: %w", err)
+	}
+
+	return assets, nil
+}
+
+func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
+	if !c.isConnected.Load() {
+		return nil, fmt.Errorf("client is not connected")
+	}
+
+	logger.Debugf("Fetching faucet balance for token: %s", tokenSymbol)
+
+	response, err := c.sendRequest("get_ledger_balances", map[string]interface{}{})
+	if err != nil {
+		return nil, fmt.Errorf("get_ledger_balances failed: %w", err)
+	}
+
+	logger.Debug("Successfully fetched ledger balances")
+
+	// Find balance for the specific token
+	balance, err := c.parseTokenBalance(response.Data, tokenSymbol)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse balance for %s: %w", tokenSymbol, err)
+	}
+
+	return balance, nil
+}
+
+func (c *Client) Transfer(destination, asset, amount string) (*TransferResult, error) {
 	if !c.isConnected.Load() {
 		return nil, fmt.Errorf("client is not connected")
 	}
@@ -241,7 +308,14 @@ func (c *Client) Transfer(destination, asset, amount string) (*RPCResponse, erro
 	}
 
 	logger.Info("Transfer completed successfully", "destination", destination)
-	return response, nil
+
+	// Parse the response data
+	result, err := c.parseTransferResult(response.Data, destination, asset, amount)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse transfer result: %w", err)
+	}
+
+	return result, nil
 }
 
 func (c *Client) sendRequest(method string, params interface{}) (*RPCResponse, error) {
@@ -378,6 +452,104 @@ func (c *Client) signMessage(data interface{}) (string, error) {
 	}
 
 	return hexutil.Encode(signature), nil
+}
+
+// Parsing helper methods
+
+func (c *Client) parseAssets(data map[string]interface{}) ([]Asset, error) {
+	assetsInterface, ok := data["assets"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid assets response format")
+	}
+
+	var assets []Asset
+	for _, assetInterface := range assetsInterface {
+		assetData, ok := assetInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		token, _ := assetData["token"].(string)
+		symbol, _ := assetData["symbol"].(string)
+		decimals, _ := assetData["decimals"].(float64)
+		chainID, _ := assetData["chain_id"].(float64)
+
+		assets = append(assets, Asset{
+			Token:    token,
+			ChainID:  int(chainID),
+			Symbol:   symbol,
+			Decimals: int(decimals),
+		})
+	}
+
+	return assets, nil
+}
+
+func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol string) (*Balance, error) {
+	balancesInterface, ok := data["ledger_balances"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid ledger balances response format")
+	}
+
+	for _, balanceInterface := range balancesInterface {
+		balanceData, ok := balanceInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		asset, ok := balanceData["asset"].(string)
+		if !ok || asset != tokenSymbol {
+			continue
+		}
+
+		amount, ok := balanceData["amount"].(string)
+		if !ok {
+			continue
+		}
+
+		return &Balance{
+			Asset:  asset,
+			Amount: amount,
+		}, nil
+	}
+
+	return &Balance{
+		Asset:  tokenSymbol,
+		Amount: "0",
+	}, nil
+}
+
+func (c *Client) parseTransferResult(data map[string]interface{}, destination, asset, amount string) (*TransferResult, error) {
+	transactionsInterface, ok := data["transactions"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid transfer response format")
+	}
+
+	// Use the first transaction for the result
+	if len(transactionsInterface) == 0 {
+		return &TransferResult{
+			TransactionID: "",
+			Amount:        amount,
+			Asset:         asset,
+			Destination:   destination,
+			Status:        "completed",
+		}, nil
+	}
+
+	txData, ok := transactionsInterface[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid transaction data format")
+	}
+
+	txID, _ := txData["id"].(string)
+
+	return &TransferResult{
+		TransactionID: txID,
+		Amount:        amount,
+		Asset:         asset,
+		Destination:   destination,
+		Status:        "completed",
+	}, nil
 }
 
 func (c *Client) Close() error {

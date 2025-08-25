@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"faucet-server/internal/clearnode"
@@ -42,6 +44,14 @@ func main() {
 
 	logger.Info("Successfully connected and authenticated with Clearnode")
 
+	if err := validateTokenSupport(client, cfg.TokenSymbol); err != nil {
+		logger.Fatalf("Token validation failed: %v", err)
+	}
+
+	if err := checkFaucetBalance(client, cfg.TokenSymbol, cfg.StandardTipAmount); err != nil {
+		logger.Fatalf("Balance check failed: %v", err)
+	}
+
 	httpServer := server.NewServer(cfg, client)
 
 	go func() {
@@ -63,4 +73,54 @@ func main() {
 	}
 
 	logger.Info("Server shutdown complete")
+}
+
+func validateTokenSupport(client *clearnode.Client, tokenSymbol string) error {
+	logger.Debugf("Validating token support for: %s", tokenSymbol)
+
+	assets, err := client.GetAssets()
+	if err != nil {
+		return fmt.Errorf("failed to fetch supported assets: %w", err)
+	}
+
+	for _, asset := range assets {
+		if asset.Symbol == tokenSymbol {
+			logger.Debugf("Token '%s' is supported by Clearnode (address: %s, decimals: %d)",
+				tokenSymbol, asset.Token, asset.Decimals)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("token '%s' is not supported by Clearnode", tokenSymbol)
+}
+
+func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTipAmount string) error {
+	logger.Debug("Checking faucet balance")
+
+	balance, err := client.GetFaucetBalance(tokenSymbol)
+	if err != nil {
+		return fmt.Errorf("failed to fetch faucet balance: %w", err)
+	}
+
+	tipAmount, err := strconv.ParseFloat(standardTipAmount, 64)
+	if err != nil {
+		return fmt.Errorf("invalid tip amount format: %w", err)
+	}
+
+	amount, err := strconv.ParseFloat(balance.Amount, 64)
+	if err != nil {
+		return fmt.Errorf("failed to parse balance amount for %s: %w", tokenSymbol, err)
+	}
+
+	minTransferCount := 10000.0
+	minRequiredBalance := tipAmount * minTransferCount
+
+	if amount < minRequiredBalance {
+		return fmt.Errorf("insufficient %s balance: %.2f (required: %.0f for 10,000 transfers)",
+			tokenSymbol, amount, minRequiredBalance)
+	}
+
+	logger.Infof("✓ Sufficient %s balance: %.2f",
+		tokenSymbol, amount)
+	return nil
 }
