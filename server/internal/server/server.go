@@ -87,7 +87,7 @@ func (s *Server) getInfo(c *gin.Context) {
 		"service":             "Nitrolite Faucet Server",
 		"version":             "1.0.0",
 		"faucet_address":      s.clearnodeClient.GetAddress(),
-		"standard_tip_amount": s.config.StandardTipAmount,
+		"standard_tip_amount": s.config.StandardTipAmountDecimal.String(),
 		"token_symbol":        s.config.TokenSymbol,
 		"endpoints":           []string{"/requestTokens"},
 	})
@@ -131,7 +131,7 @@ func (s *Server) requestTokens(c *gin.Context) {
 	result, err := s.clearnodeClient.Transfer(
 		userAddress,
 		asset,
-		s.config.StandardTipAmount,
+		s.config.StandardTipAmountDecimal,
 	)
 	if err != nil {
 		logger.Errorf("Transfer failed for %s: %v", userAddress, err)
@@ -142,13 +142,13 @@ func (s *Server) requestTokens(c *gin.Context) {
 	}
 
 	logger.Infof("Successfully sent %s %s to %s (txID: %s)",
-		result.Amount, result.Asset, result.Destination, result.TransactionID)
+		result.Amount.String(), result.Asset, result.Destination, result.TransactionID)
 
 	c.JSON(http.StatusOK, FaucetResponse{
 		Success:     true,
 		Message:     "Tokens sent successfully",
 		TxID:        result.TransactionID,
-		Amount:      result.Amount,
+		Amount:      result.Amount.String(),
 		Asset:       result.Asset,
 		Destination: result.Destination,
 	})

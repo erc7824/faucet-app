@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 
 	"faucet-server/internal/logger"
 )
@@ -60,16 +61,13 @@ type Asset struct {
 }
 
 type Balance struct {
-	Asset  string `json:"asset"`
-	Amount string `json:"amount"`
+	Asset  string          `json:"asset"`
+	Amount decimal.Decimal `json:"amount"`
 }
 
-type TransferResult struct {
-	TransactionID string `json:"transaction_id"`
-	Amount        string `json:"amount"`
-	Asset         string `json:"asset"`
-	Destination   string `json:"destination"`
-	Status        string `json:"status"`
+type Allocation struct {
+	Asset  string          `json:"asset"`
+	Amount decimal.Decimal `json:"amount"`
 }
 
 type TransferRequest struct {
@@ -77,9 +75,12 @@ type TransferRequest struct {
 	Allocations []Allocation `json:"allocations"`
 }
 
-type Allocation struct {
-	Asset  string `json:"asset"`
-	Amount string `json:"amount"`
+type TransferResult struct {
+	TransactionID string          `json:"transaction_id"`
+	Amount        decimal.Decimal `json:"amount"`
+	Asset         string          `json:"asset"`
+	Destination   string          `json:"destination"`
+	Status        string          `json:"status"`
 }
 
 func NewClient(privateKeyHex, clearnodeURL string) (*Client, error) {
@@ -285,7 +286,7 @@ func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
 	return balance, nil
 }
 
-func (c *Client) Transfer(destination, asset, amount string) (*TransferResult, error) {
+func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
 	if !c.isConnected.Load() {
 		return nil, fmt.Errorf("client is not connected")
 	}
@@ -502,9 +503,14 @@ func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol stri
 			continue
 		}
 
-		amount, ok := balanceData["amount"].(string)
+		amountStr, ok := balanceData["amount"].(string)
 		if !ok {
 			continue
+		}
+
+		amount, err := decimal.NewFromString(amountStr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse balance amount: %w", err)
 		}
 
 		return &Balance{
@@ -515,11 +521,11 @@ func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol stri
 
 	return &Balance{
 		Asset:  tokenSymbol,
-		Amount: "0",
+		Amount: decimal.Zero,
 	}, nil
 }
 
-func (c *Client) parseTransferResult(data map[string]interface{}, destination, asset, amount string) (*TransferResult, error) {
+func (c *Client) parseTransferResult(data map[string]interface{}, destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
 	transactionsInterface, ok := data["transactions"].([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid transfer response format")

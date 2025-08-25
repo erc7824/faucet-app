@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
+
+	"github.com/shopspring/decimal"
 
 	"faucet-server/internal/clearnode"
 	"faucet-server/internal/config"
@@ -16,11 +17,13 @@ import (
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Fatalf("Failed to load configuration: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to load configuration: %v\n", err)
+		os.Exit(1)
 	}
 
 	if err := logger.Initialize(cfg.LogLevel); err != nil {
-		logger.Fatalf("Failed to initialize logger: %v", err)
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
 	}
 
 	logger.Info("Starting Nitrolite Faucet Server")
@@ -48,7 +51,7 @@ func main() {
 		logger.Fatalf("Token validation failed: %v", err)
 	}
 
-	if err := checkFaucetBalance(client, cfg.TokenSymbol, cfg.StandardTipAmount); err != nil {
+	if err := checkFaucetBalance(client, cfg.TokenSymbol, cfg.StandardTipAmountDecimal); err != nil {
 		logger.Fatalf("Balance check failed: %v", err)
 	}
 
@@ -94,7 +97,7 @@ func validateTokenSupport(client *clearnode.Client, tokenSymbol string) error {
 	return fmt.Errorf("token '%s' is not supported by Clearnode", tokenSymbol)
 }
 
-func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTipAmount string) error {
+func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTipAmount decimal.Decimal) error {
 	logger.Debug("Checking faucet balance")
 
 	balance, err := client.GetFaucetBalance(tokenSymbol)
@@ -102,25 +105,15 @@ func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTi
 		return fmt.Errorf("failed to fetch faucet balance: %w", err)
 	}
 
-	tipAmount, err := strconv.ParseFloat(standardTipAmount, 64)
-	if err != nil {
-		return fmt.Errorf("invalid tip amount format: %w", err)
+	minTransferCount := decimal.NewFromInt(10000)
+	minRequiredBalance := standardTipAmount.Mul(minTransferCount)
+
+	if balance.Amount.LessThan(minRequiredBalance) {
+		return fmt.Errorf("insufficient %s balance: %s (required: %s for 10,000 transfers)",
+			tokenSymbol, balance.Amount.String(), minRequiredBalance.String())
 	}
 
-	amount, err := strconv.ParseFloat(balance.Amount, 64)
-	if err != nil {
-		return fmt.Errorf("failed to parse balance amount for %s: %w", tokenSymbol, err)
-	}
-
-	minTransferCount := 10000.0
-	minRequiredBalance := tipAmount * minTransferCount
-
-	if amount < minRequiredBalance {
-		return fmt.Errorf("insufficient %s balance: %.2f (required: %.0f for 10,000 transfers)",
-			tokenSymbol, amount, minRequiredBalance)
-	}
-
-	logger.Infof("✓ Sufficient %s balance: %.2f",
-		tokenSymbol, amount)
+	logger.Infof("✓ Sufficient %s balance: %s",
+		tokenSymbol, balance.Amount.String())
 	return nil
 }
