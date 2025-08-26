@@ -56,7 +56,7 @@ Set the following environment variables (or create a `.env` file):
 | `SIGNER_PRIVATE_KEY` | **Yes** | - | Signer private key for transfers (without 0x prefix) | `fedcba098...` |
 | `CLEARNODE_URL` | **Yes** | - | Clearnode WebSocket URL | `wss://testnet.clearnode.io/ws` |
 | `TOKEN_SYMBOL` | **Yes** | - | Token symbol to distribute | `usdc` |
-| `STANDARD_TIP_AMOUNT` | **Yes** | - | Amount to send per request | `1000000` |
+| `STANDARD_TIP_AMOUNT` | **Yes** | - | Amount to send per request (decimal format) | `10.0` |
 | `LOG_LEVEL` | No | `info` | Logging level (debug/info/warn/error) | `info` |
 
 ## API Endpoints

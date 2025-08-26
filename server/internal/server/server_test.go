@@ -216,8 +216,8 @@ func TestFaucetServerIntegration(t *testing.T) {
 		SignerPrivateKey:         "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
 		ClearnodeURL:             mockClearnode.GetURL(),
 		TokenSymbol:              "usdc",
-		StandardTipAmount:        "1000000", // 1 USDC with 6 decimals
-		StandardTipAmountDecimal: decimal.RequireFromString("1000000"),
+		StandardTipAmount:        "10", // 10 USDC in decimal format
+		StandardTipAmountDecimal: decimal.RequireFromString("10.0"),
 		LogLevel:                 "debug",
 	}
 
@@ -259,7 +259,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		assert.True(t, response.Success)
 		assert.Equal(t, MsgTokensSentSuccessfully, response.Message)
 		assert.Equal(t, "mock-tx-12345", response.TxID)
-		assert.Equal(t, "1000000", response.Amount)
+		assert.Equal(t, "10", response.Amount)
 		assert.Equal(t, "usdc", response.Asset)
 		assert.Equal(t, testAddress, response.Destination)
 
@@ -268,7 +268,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		require.NotNil(t, transferReq)
 		assert.Equal(t, testAddress, transferReq.Destination)
 		assert.Equal(t, "usdc", transferReq.Asset)
-		assert.True(t, decimal.RequireFromString("1000000").Equal(transferReq.Amount))
+		assert.True(t, decimal.RequireFromString("10.0").Equal(transferReq.Amount))
 	})
 
 	t.Run("invalid address format", func(t *testing.T) {
@@ -341,7 +341,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "Nitrolite Faucet Server", infoResponse["service"])
 		assert.Equal(t, "1.0.0", infoResponse["version"])
-		assert.Equal(t, "1000000", infoResponse["standard_tip_amount"])
+		assert.Equal(t, "10", infoResponse["standard_tip_amount"])
 		assert.Equal(t, "usdc", infoResponse["token_symbol"])
 		assert.Contains(t, infoResponse["endpoints"], "/requestTokens")
 	})
