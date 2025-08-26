@@ -106,9 +106,9 @@ func (s *Server) requestTokens(c *gin.Context) {
 	// Validate the user address
 	userAddress := strings.TrimSpace(req.UserAddress)
 	if !common.IsHexAddress(userAddress) {
-		logger.Warnf("Invalid Ethereum address: %s", userAddress)
+		logger.Warnf("Invalid address format: %s", userAddress)
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: "Invalid Ethereum address format.",
+			Error: "Invalid address format.",
 		})
 		return
 	}

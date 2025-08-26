@@ -86,7 +86,7 @@ Request tokens from the faucet.
 **Error Response:**
 ```json
 {
-  "error": "Invalid Ethereum address format."
+  "error": "Invalid address format."
 }
 ```
 
