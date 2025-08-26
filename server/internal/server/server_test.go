@@ -213,6 +213,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 	cfg := &config.Config{
 		ServerPort:               "0", // Use random port
 		OwnerPrivateKey:          "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+		SignerPrivateKey:         "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
 		ClearnodeURL:             mockClearnode.GetURL(),
 		TokenSymbol:              "usdc",
 		StandardTipAmount:        "1000000", // 1 USDC with 6 decimals
@@ -220,7 +221,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		LogLevel:                 "debug",
 	}
 
-	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.ClearnodeURL)
+	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL)
 	require.NoError(t, err)
 
 	err = client.Connect()

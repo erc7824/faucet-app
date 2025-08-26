@@ -52,7 +52,8 @@ Set the following environment variables (or create a `.env` file):
 | Variable | Required | Default | Description | Example |
 |----------|----------|---------|-------------|---------|
 | `SERVER_PORT` | No | `8080` | HTTP server port | `8080` |
-| `OWNER_PRIVATE_KEY` | **Yes** | - | Private key (without 0x prefix) | `abcdef123...` |
+| `OWNER_PRIVATE_KEY` | **Yes** | - | Owner private key for auth (without 0x prefix) | `abcdef123...` |
+| `SIGNER_PRIVATE_KEY` | **Yes** | - | Signer private key for transfers (without 0x prefix) | `fedcba098...` |
 | `CLEARNODE_URL` | **Yes** | - | Clearnode WebSocket URL | `wss://testnet.clearnode.io/ws` |
 | `TOKEN_SYMBOL` | **Yes** | - | Token symbol to distribute | `usdc` |
 | `STANDARD_TIP_AMOUNT` | **Yes** | - | Amount to send per request | `1000000` |
@@ -128,20 +129,37 @@ The server maintains a persistent WebSocket connection with the Clearnode:
 - **Reconnection**: Currently manual (restart required if connection drops)
 - **Message Handling**: Asynchronous request/response pattern with request ID tracking
 
+### Key Separation Architecture
+
+The faucet uses separate private keys for enhanced security:
+
+- **Owner Private Key (`OWNER_PRIVATE_KEY`)**: Used for EIP-712 authentication with Clearnode
+- **Signer Private Key (`SIGNER_PRIVATE_KEY`)**: Used for signing transfer transactions
+
+**Security Benefits:**
+- **Access Control**: Owner key controls authentication, signer key controls transfers
+- **Key Rotation**: Signer key can be rotated without re-authentication
+- **Reduced Risk**: Compromise of one key doesn't grant full access
+- **Operational Flexibility**: Different keys for different operational roles
+
+**Validation**: The system validates that both keys are different to prevent accidental reuse.
+
 ### EIP-712 Authentication Flow
 
-1. **auth_request**: Server sends authentication request with wallet address and session parameters
+1. **auth_request**: Server sends authentication request with **owner wallet address** and session parameters
 2. **Challenge**: Clearnode responds with a random challenge token  
-3. **EIP-712 Signing**: Server creates structured data signature using the challenge, session parameters, and allowances
+3. **EIP-712 Signing**: Server creates structured data signature using **owner private key**
 4. **auth_verify**: Server sends the challenge with EIP-712 signature for verification
 5. **JWT Token**: Upon successful verification, server receives JWT token for subsequent requests
 
 The EIP-712 signature includes:
 - Challenge token from server
-- Wallet address and session key
+- Owner wallet address and session key
 - Application scope and permissions
 - Expiration time
 - Asset allowances (empty for faucet)
+
+**Note**: Transfer transactions are signed with the **signer private key**, not the owner key.
 
 ## Startup Validation
 
@@ -211,10 +229,13 @@ typedData := apitypes.TypedData{
 
 ## Security Features
 
+- **Key Separation**: Uses separate owner and signer private keys for enhanced security
+- **Key Validation**: Enforces that owner and signer keys are different
 - **Address Validation**: Validates Ethereum address format
-- **Private Key Security**: Private key is only used for signing, never exposed
+- **Private Key Security**: Private keys are only used for signing, never exposed
 - **CORS Support**: Configurable CORS headers for web integration
 - **Request Signing**: All Clearnode requests are cryptographically signed
+- **Role-Based Access**: Owner key for authentication, signer key for transfers
 
 ## Building for Production
 

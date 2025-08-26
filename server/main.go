@@ -30,12 +30,12 @@ func main() {
 	logger.Infof("Configuration loaded: Server port=%s, Clearnode URL=%s",
 		cfg.ServerPort, cfg.ClearnodeURL)
 
-	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.ClearnodeURL)
+	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL)
 	if err != nil {
 		logger.Fatalf("Failed to create Clearnode client: %v", err)
 	}
 
-	logger.Infof("Faucet owner address: %s", client.GetAddress())
+	logger.Infof("Faucet signer address: %s", client.GetAddress())
 
 	if err := client.Connect(); err != nil {
 		logger.Fatalf("Failed to connect to Clearnode: %v", err)
@@ -105,7 +105,7 @@ func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTi
 		return fmt.Errorf("failed to fetch faucet balance: %w", err)
 	}
 
-	minTransferCount := decimal.NewFromInt(10000)
+	minTransferCount := decimal.NewFromFloat(0.01)
 	minRequiredBalance := standardTipAmount.Mul(minTransferCount)
 
 	if balance.Amount.LessThan(minRequiredBalance) {

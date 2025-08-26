@@ -20,9 +20,11 @@ import (
 const RESPONSE_TIMEOUT_SEC = 5
 
 type Client struct {
-	privateKey *ecdsa.PrivateKey
-	address    common.Address
-	url        string
+	ownerPrivateKey  *ecdsa.PrivateKey
+	ownerAddress     common.Address
+	signerPrivateKey *ecdsa.PrivateKey
+	signerAddress    common.Address
+	url              string
 
 	conn        *websocket.Conn
 	isConnected atomic.Bool
@@ -83,27 +85,47 @@ type TransferResult struct {
 	Status        string          `json:"status"`
 }
 
-func NewClient(privateKeyHex, clearnodeURL string) (*Client, error) {
-	// Clean the private key (remove 0x prefix if present)
-	if len(privateKeyHex) > 2 && privateKeyHex[:2] == "0x" {
-		privateKeyHex = privateKeyHex[2:]
+func NewClient(ownerPrivateKeyHex, signerPrivateKeyHex, clearnodeURL string) (*Client, error) {
+	// Clean the owner private key (remove 0x prefix if present)
+	if len(ownerPrivateKeyHex) > 2 && ownerPrivateKeyHex[:2] == "0x" {
+		ownerPrivateKeyHex = ownerPrivateKeyHex[2:]
 	}
 
-	privateKey, err := crypto.HexToECDSA(privateKeyHex)
+	ownerPrivateKey, err := crypto.HexToECDSA(ownerPrivateKeyHex)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key: %w", err)
+		return nil, fmt.Errorf("failed to parse owner private key: %w", err)
 	}
 
-	address := crypto.PubkeyToAddress(privateKey.PublicKey)
+	ownerAddress := crypto.PubkeyToAddress(ownerPrivateKey.PublicKey)
 
-	eip712Signer := NewEIP712Signer(privateKey)
+	// Clean the signer private key (remove 0x prefix if present)
+	if len(signerPrivateKeyHex) > 2 && signerPrivateKeyHex[:2] == "0x" {
+		signerPrivateKeyHex = signerPrivateKeyHex[2:]
+	}
+
+	signerPrivateKey, err := crypto.HexToECDSA(signerPrivateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse signer private key: %w", err)
+	}
+
+	signerAddress := crypto.PubkeyToAddress(signerPrivateKey.PublicKey)
+
+	// Validate that owner and signer keys are different
+	if ownerPrivateKeyHex == signerPrivateKeyHex {
+		return nil, fmt.Errorf("owner and signer private keys must be different for security reasons")
+	}
+
+	// Use owner private key for EIP-712 authentication
+	eip712Signer := NewEIP712Signer(ownerPrivateKey)
 
 	return &Client{
-		privateKey:      privateKey,
-		address:         address,
-		url:             clearnodeURL,
-		eip712Signer:    eip712Signer,
-		pendingRequests: make(map[uint64]chan *RPCResponse),
+		ownerPrivateKey:  ownerPrivateKey,
+		ownerAddress:     ownerAddress,
+		signerPrivateKey: signerPrivateKey,
+		signerAddress:    signerAddress,
+		url:              clearnodeURL,
+		eip712Signer:     eip712Signer,
+		pendingRequests:  make(map[uint64]chan *RPCResponse),
 	}, nil
 }
 
@@ -132,12 +154,12 @@ func (c *Client) Authenticate() error {
 	appName := "Nitrolite Faucet"
 	scope := "app.transfer"
 	expire := "36000000"            // 10_000 hours
-	sessionKey := c.address         // Use same address as session key for simplicity
+	sessionKey := c.signerAddress   // Use signer address as session key
 	application := common.Address{} // Zero address if no specific app
 
 	// Step 1: Send auth_request
 	authRequestData := map[string]interface{}{
-		"address":     c.address.Hex(),
+		"address":     c.ownerAddress.Hex(),
 		"session_key": sessionKey.Hex(),
 		"app_name":    appName,
 		"scope":       scope,
@@ -447,7 +469,7 @@ func (c *Client) signMessage(data interface{}) (string, error) {
 	}
 
 	hash := crypto.Keccak256Hash(jsonData)
-	signature, err := crypto.Sign(hash.Bytes(), c.privateKey)
+	signature, err := crypto.Sign(hash.Bytes(), c.signerPrivateKey)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign: %w", err)
 	}
@@ -571,5 +593,5 @@ func (c *Client) IsConnected() bool {
 }
 
 func (c *Client) GetAddress() common.Address {
-	return c.address
+	return c.signerAddress
 }
