@@ -69,26 +69,8 @@ func NewServer(cfg *config.Config, client *clearnode.Client) *Server {
 }
 
 func (s *Server) setupRoutes() {
-	s.router.GET("/health", s.healthCheck)
 	s.router.POST("/requestTokens", s.requestTokens)
 	s.router.GET("/info", s.getInfo)
-}
-
-func (s *Server) healthCheck(c *gin.Context) {
-	status := "healthy"
-	if !s.clearnodeClient.IsConnected() {
-		status = "unhealthy - no clearnode connection"
-		c.JSON(http.StatusServiceUnavailable, gin.H{
-			"status":    status,
-			"connected": false,
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"status":    status,
-		"connected": true,
-	})
 }
 
 func (s *Server) getInfo(c *gin.Context) {
@@ -125,14 +107,6 @@ func (s *Server) requestTokens(c *gin.Context) {
 	userAddress = common.HexToAddress(userAddress).Hex()
 
 	logger.Infof("Processing faucet request for address: %s", userAddress)
-
-	if !s.clearnodeClient.IsConnected() {
-		logger.Error("Clearnode client is not connected")
-		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error: ErrServiceUnavailable,
-		})
-		return
-	}
 
 	// Use the configured token symbol directly (validation done at startup)
 	asset := s.config.TokenSymbol

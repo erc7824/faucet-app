@@ -313,21 +313,6 @@ func TestFaucetServerIntegration(t *testing.T) {
 		assert.Equal(t, ErrInvalidRequestFormat, errorResponse.Error)
 	})
 
-	t.Run("health endpoint", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/health", nil)
-		w := httptest.NewRecorder()
-
-		server.router.ServeHTTP(w, req)
-
-		assert.Equal(t, http.StatusOK, w.Code)
-
-		var healthResponse map[string]interface{}
-		err := json.Unmarshal(w.Body.Bytes(), &healthResponse)
-		require.NoError(t, err)
-		assert.Equal(t, "healthy", healthResponse["status"])
-		assert.Equal(t, true, healthResponse["connected"])
-	})
-
 	t.Run("info endpoint", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/info", nil)
 		w := httptest.NewRecorder()
@@ -344,5 +329,64 @@ func TestFaucetServerIntegration(t *testing.T) {
 		assert.Equal(t, "10", infoResponse["standard_tip_amount"])
 		assert.Equal(t, "usdc", infoResponse["token_symbol"])
 		assert.Contains(t, infoResponse["endpoints"], "/requestTokens")
+	})
+
+	t.Run("connection recovery after abrupt termination", func(t *testing.T) {
+		testAddress := common.HexToAddress("0x742D35CC6634c0532925a3B8c17D18fBe3b78890").Hex()
+		requestBody := FaucetRequest{
+			UserAddress: testAddress,
+		}
+		jsonBody, err := json.Marshal(requestBody)
+		require.NoError(t, err)
+
+		// First, verify normal operation
+		req1 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(jsonBody))
+		req1.Header.Set("Content-Type", "application/json")
+		w1 := httptest.NewRecorder()
+
+		server.router.ServeHTTP(w1, req1)
+		assert.Equal(t, http.StatusOK, w1.Code)
+
+		// Clear the transfer request from first call
+		mockClearnode.transferRequest = nil
+
+		// Simulate abrupt connection termination by closing the WebSocket
+		err = client.Close()
+		require.NoError(t, err)
+
+		// Verify connection is not available
+		assert.False(t, client.IsConnected())
+
+		// Make another request - this should trigger reconnection
+		req2 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(jsonBody))
+		req2.Header.Set("Content-Type", "application/json")
+		w2 := httptest.NewRecorder()
+
+		server.router.ServeHTTP(w2, req2)
+
+		// The request should succeed after reconnection
+		assert.Equal(t, http.StatusOK, w2.Code)
+
+		var response FaucetResponse
+		err = json.Unmarshal(w2.Body.Bytes(), &response)
+		require.NoError(t, err)
+
+		// Verify response structure
+		assert.True(t, response.Success)
+		assert.Equal(t, MsgTokensSentSuccessfully, response.Message)
+		assert.Equal(t, "mock-tx-12345", response.TxID)
+		assert.Equal(t, "10", response.Amount)
+		assert.Equal(t, "usdc", response.Asset)
+		assert.Equal(t, testAddress, response.Destination)
+
+		// Verify the transfer request was sent after reconnection
+		transferReq := mockClearnode.GetTransferRequest()
+		require.NotNil(t, transferReq)
+		assert.Equal(t, testAddress, transferReq.Destination)
+		assert.Equal(t, "usdc", transferReq.Asset)
+		assert.True(t, decimal.RequireFromString("10.0").Equal(transferReq.Amount))
+
+		// Verify connection is restored
+		assert.True(t, client.IsConnected())
 	})
 }

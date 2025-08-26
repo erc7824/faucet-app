@@ -26,11 +26,10 @@ type Client struct {
 	signerAddress    common.Address
 	url              string
 
-	conn        *websocket.Conn
-	isConnected atomic.Bool
-	jwtToken    string
-	lastReqID   atomic.Uint64
-	mu          sync.RWMutex
+	conn      *websocket.Conn
+	jwtToken  string
+	lastReqID atomic.Uint64
+	mu        sync.RWMutex
 
 	// EIP-712 signer for authentication
 	eip712Signer *EIP712Signer
@@ -138,7 +137,6 @@ func (c *Client) Connect() error {
 	}
 
 	c.conn = conn
-	c.isConnected.Store(true)
 
 	// Start listening for responses
 	go c.listenForResponses()
@@ -220,6 +218,13 @@ func (c *Client) Authenticate() error {
 
 	// Send the message
 	c.mu.Lock()
+	if c.conn == nil {
+		c.mu.Unlock()
+		c.responseMu.Lock()
+		delete(c.pendingRequests, requestID)
+		c.responseMu.Unlock()
+		return fmt.Errorf("connection is not available for Authentication and request %d", requestID)
+	}
 	err = c.conn.WriteJSON(message)
 	c.mu.Unlock()
 
@@ -263,8 +268,8 @@ func (c *Client) Authenticate() error {
 }
 
 func (c *Client) GetAssets() ([]Asset, error) {
-	if !c.isConnected.Load() {
-		return nil, fmt.Errorf("client is not connected")
+	if err := c.EnsureConnected(); err != nil {
+		return nil, err
 	}
 
 	logger.Debug("Fetching supported assets from Clearnode")
@@ -286,8 +291,8 @@ func (c *Client) GetAssets() ([]Asset, error) {
 }
 
 func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
-	if !c.isConnected.Load() {
-		return nil, fmt.Errorf("client is not connected")
+	if err := c.EnsureConnected(); err != nil {
+		return nil, err
 	}
 
 	logger.Debugf("Fetching faucet balance for token: %s", tokenSymbol)
@@ -309,8 +314,8 @@ func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
 }
 
 func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
-	if !c.isConnected.Load() {
-		return nil, fmt.Errorf("client is not connected")
+	if err := c.EnsureConnected(); err != nil {
+		return nil, err
 	}
 
 	transferData := TransferRequest{
@@ -363,6 +368,13 @@ func (c *Client) sendRequest(method string, params interface{}) (*RPCResponse, e
 	c.responseMu.Unlock()
 
 	c.mu.Lock()
+	if c.conn == nil {
+		c.mu.Unlock()
+		c.responseMu.Lock()
+		delete(c.pendingRequests, requestID)
+		c.responseMu.Unlock()
+		return nil, fmt.Errorf("connection is not available for Transfer and request %d", requestID)
+	}
 	err = c.conn.WriteJSON(message)
 	c.mu.Unlock()
 
@@ -388,9 +400,9 @@ func (c *Client) sendRequest(method string, params interface{}) (*RPCResponse, e
 
 func (c *Client) listenForResponses() {
 	defer func() {
-		c.isConnected.Store(false)
 		if c.conn != nil {
 			c.conn.Close()
+			c.conn = nil
 		}
 	}()
 
@@ -581,15 +593,42 @@ func (c *Client) parseTransferResult(data map[string]interface{}, destination, a
 }
 
 func (c *Client) Close() error {
-	c.isConnected.Store(false)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.conn != nil {
-		return c.conn.Close()
+		err := c.conn.Close()
+		c.conn = nil
+		return err
 	}
 	return nil
 }
 
+// IsConnected checks if the WebSocket connection is active
 func (c *Client) IsConnected() bool {
-	return c.isConnected.Load()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.conn != nil
+}
+
+// EnsureConnected ensures the client is connected and authenticated
+func (c *Client) EnsureConnected() error {
+	if c.IsConnected() {
+		return nil
+	}
+
+	logger.Info("Connection lost, reconnecting to Clearnode...")
+
+	if err := c.Connect(); err != nil {
+		return fmt.Errorf("failed to reconnect: %w", err)
+	}
+
+	if err := c.Authenticate(); err != nil {
+		return fmt.Errorf("failed to re-authenticate: %w", err)
+	}
+
+	logger.Info("Successfully reconnected and re-authenticated")
+	return nil
 }
 
 func (c *Client) GetAddress() common.Address {

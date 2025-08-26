@@ -91,18 +91,6 @@ Request tokens from the faucet.
 }
 ```
 
-### GET /health
-
-Health check endpoint.
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "connected": true
-}
-```
-
 ### GET /info
 
 Service information endpoint.
@@ -303,8 +291,6 @@ Log levels: `debug`, `info`, `warn`, `error`, `fatal`
 
 Key metrics to monitor:
 
-- Health endpoint status (`/health`)
-- WebSocket connection status
 - Transfer success/failure rates
 - Response times
 - Server resource usage
