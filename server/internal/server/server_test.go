@@ -256,7 +256,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 
 		// Verify response structure
 		assert.True(t, response.Success)
-		assert.Equal(t, "Tokens sent successfully", response.Message)
+		assert.Equal(t, MsgTokensSentSuccessfully, response.Message)
 		assert.Equal(t, "mock-tx-12345", response.TxID)
 		assert.Equal(t, "1000000", response.Amount)
 		assert.Equal(t, "usdc", response.Asset)
@@ -288,7 +288,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		var errorResponse ErrorResponse
 		err = json.Unmarshal(w.Body.Bytes(), &errorResponse)
 		require.NoError(t, err)
-		assert.Equal(t, "Invalid address format.", errorResponse.Error)
+		assert.Equal(t, ErrInvalidAddressFormat, errorResponse.Error)
 	})
 
 	t.Run("missing userAddress field", func(t *testing.T) {
@@ -309,7 +309,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		var errorResponse ErrorResponse
 		err = json.Unmarshal(w.Body.Bytes(), &errorResponse)
 		require.NoError(t, err)
-		assert.Contains(t, errorResponse.Error, "Invalid request format")
+		assert.Equal(t, ErrInvalidRequestFormat, errorResponse.Error)
 	})
 
 	t.Run("health endpoint", func(t *testing.T) {

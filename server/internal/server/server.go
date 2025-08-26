@@ -12,6 +12,15 @@ import (
 	"faucet-server/internal/logger"
 )
 
+// Error message constants
+const (
+	ErrInvalidRequestFormat  = "Invalid request format. Expected JSON with 'userAddress' field."
+	ErrInvalidAddressFormat  = "Invalid address format."
+	ErrServiceUnavailable   = "Faucet service is currently unavailable. Please try again later."
+	ErrTransferFailed       = "Failed to send tokens. Please try again later."
+	MsgTokensSentSuccessfully = "Tokens sent successfully"
+)
+
 type Server struct {
 	config          *config.Config
 	clearnodeClient *clearnode.Client
@@ -98,7 +107,7 @@ func (s *Server) requestTokens(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		logger.Warnf("Invalid request format: %v", err)
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: "Invalid request format. Expected JSON with 'userAddress' field.",
+			Error: ErrInvalidRequestFormat,
 		})
 		return
 	}
@@ -108,7 +117,7 @@ func (s *Server) requestTokens(c *gin.Context) {
 	if !common.IsHexAddress(userAddress) {
 		logger.Warnf("Invalid address format: %s", userAddress)
 		c.JSON(http.StatusBadRequest, ErrorResponse{
-			Error: "Invalid address format.",
+			Error: ErrInvalidAddressFormat,
 		})
 		return
 	}
@@ -120,7 +129,7 @@ func (s *Server) requestTokens(c *gin.Context) {
 	if !s.clearnodeClient.IsConnected() {
 		logger.Error("Clearnode client is not connected")
 		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
-			Error: "Faucet service is currently unavailable. Please try again later.",
+			Error: ErrServiceUnavailable,
 		})
 		return
 	}
@@ -136,7 +145,7 @@ func (s *Server) requestTokens(c *gin.Context) {
 	if err != nil {
 		logger.Errorf("Transfer failed for %s: %v", userAddress, err)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
-			Error: "Failed to send tokens. Please try again later.",
+			Error: ErrTransferFailed,
 		})
 		return
 	}
@@ -146,7 +155,7 @@ func (s *Server) requestTokens(c *gin.Context) {
 
 	c.JSON(http.StatusOK, FaucetResponse{
 		Success:     true,
-		Message:     "Tokens sent successfully",
+		Message:     MsgTokensSentSuccessfully,
 		TxID:        result.TransactionID,
 		Amount:      result.Amount.String(),
 		Asset:       result.Asset,
