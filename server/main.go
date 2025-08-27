@@ -51,7 +51,7 @@ func main() {
 		logger.Fatalf("Token validation failed: %v", err)
 	}
 
-	if err := checkFaucetBalance(client, cfg.TokenSymbol, cfg.StandardTipAmountDecimal); err != nil {
+	if err := checkFaucetBalance(client, cfg.TokenSymbol, cfg.StandardTipAmountDecimal, cfg.MinTransferCount); err != nil {
 		logger.Fatalf("Balance check failed: %v", err)
 	}
 
@@ -97,7 +97,7 @@ func validateTokenSupport(client *clearnode.Client, tokenSymbol string) error {
 	return fmt.Errorf("token '%s' is not supported by Clearnode", tokenSymbol)
 }
 
-func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTipAmount decimal.Decimal) error {
+func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTipAmount decimal.Decimal, minTransferCount int) error {
 	logger.Debug("Checking faucet balance")
 
 	balance, err := client.GetFaucetBalance(tokenSymbol)
@@ -105,12 +105,11 @@ func checkFaucetBalance(client *clearnode.Client, tokenSymbol string, standardTi
 		return fmt.Errorf("failed to fetch faucet balance: %w", err)
 	}
 
-	minTransferCount := decimal.NewFromFloat(0.01)
-	minRequiredBalance := standardTipAmount.Mul(minTransferCount)
+	minRequiredBalance := standardTipAmount.Mul(decimal.NewFromInt(int64(minTransferCount)))
 
 	if balance.Amount.LessThan(minRequiredBalance) {
-		return fmt.Errorf("insufficient %s balance: %s (required: %s for 10,000 transfers)",
-			tokenSymbol, balance.Amount.String(), minRequiredBalance.String())
+		return fmt.Errorf("insufficient %s balance: %s (required: %s for %d transfers)",
+			tokenSymbol, balance.Amount.String(), minRequiredBalance.String(), minTransferCount)
 	}
 
 	logger.Infof("✓ Sufficient %s balance: %s",

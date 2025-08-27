@@ -15,6 +15,7 @@ type Config struct {
 	ClearnodeURL      string `env:"CLEARNODE_URL" env-required:"true" env-description:"Clearnode WebSocket URL"`
 	TokenSymbol       string `env:"TOKEN_SYMBOL" env-required:"true" env-description:"Token symbol to distribute (e.g., usdc, weth)"`
 	StandardTipAmount string `env:"STANDARD_TIP_AMOUNT" env-required:"true" env-description:"Default amount to send per request"`
+	MinTransferCount  int    `env:"MIN_TRANSFER_COUNT" env-required:"true" env-description:"Number of transfers a server should have a balance for to operate"`
 
 	LogLevel string `env:"LOG_LEVEL" env-default:"info" env-description:"Logging level (debug, info, warn, error)"`
 

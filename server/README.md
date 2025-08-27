@@ -57,6 +57,7 @@ Set the following environment variables (or create a `.env` file):
 | `CLEARNODE_URL` | **Yes** | - | Clearnode WebSocket URL | `wss://testnet.clearnode.io/ws` |
 | `TOKEN_SYMBOL` | **Yes** | - | Token symbol to distribute | `usdc` |
 | `STANDARD_TIP_AMOUNT` | **Yes** | - | Amount to send per request (decimal format) | `10.0` |
+| `MIN_TRANSFER_COUNT` | **Yes** | - | Minimum number of transfers the server should have a balance for to operate | `5` |
 | `LOG_LEVEL` | No | `info` | Logging level (debug/info/warn/error) | `info` |
 
 ## API Endpoints
