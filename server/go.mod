@@ -3,7 +3,7 @@ module faucet-server
 go 1.21
 
 require (
-	github.com/ethereum/go-ethereum v1.13.8
+	github.com/ethereum/go-ethereum v1.13.15
 	github.com/gin-gonic/gin v1.9.1
 	github.com/gorilla/websocket v1.5.1
 	github.com/ilyakaznacheev/cleanenv v1.5.0
@@ -49,7 +49,7 @@ require (
 	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/net v0.19.0 // indirect
 	golang.org/x/sync v0.5.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/sys v0.16.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/protobuf v1.30.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
