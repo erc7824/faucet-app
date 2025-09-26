@@ -221,7 +221,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		LogLevel:                 "debug",
 	}
 
-	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL)
+	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL, cfg.TokenSymbol, cfg.StandardTipAmountDecimal, 1)
 	require.NoError(t, err)
 
 	err = client.Connect()
@@ -389,4 +389,215 @@ func TestFaucetServerIntegration(t *testing.T) {
 		// Verify connection is restored
 		assert.True(t, client.IsConnected())
 	})
+}
+
+func TestServerConnectionAndOperationalErrors(t *testing.T) {
+	err := logger.Initialize("debug")
+	require.NoError(t, err)
+
+	t.Run("connection failure returns connection failed", func(t *testing.T) {
+		// Create client with invalid URL to simulate connection failure
+		cfg := &config.Config{
+			ServerPort:               "0",
+			OwnerPrivateKey:          "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+			SignerPrivateKey:         "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
+			ClearnodeURL:             "ws://invalid-url:9999",
+			TokenSymbol:              "usdc",
+			StandardTipAmount:        "10",
+			StandardTipAmountDecimal: decimal.RequireFromString("10.0"),
+			LogLevel:                 "debug",
+		}
+
+		client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL, cfg.TokenSymbol, cfg.StandardTipAmountDecimal, 1)
+		require.NoError(t, err)
+
+		server := NewServer(cfg, client)
+
+		testAddress := common.HexToAddress("0x742D35CC6634c0532925a3B8c17D18fBe3b78890").Hex()
+		requestBody := FaucetRequest{
+			UserAddress: testAddress,
+		}
+		jsonBody, err := json.Marshal(requestBody)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		server.router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+		var errorResponse ErrorResponse
+		err = json.Unmarshal(w.Body.Bytes(), &errorResponse)
+		require.NoError(t, err)
+		assert.Equal(t, ErrClearnodeConnectionFailed, errorResponse.Error)
+	})
+
+	t.Run("operational failure returns service unavailable", func(t *testing.T) {
+		// This test requires a mock server that responds correctly to connection/auth
+		// but provides wrong assets/balance data to trigger EnsureOperational failure
+
+		mockClearnode := NewMockOperationalFailureServer()
+		defer mockClearnode.Close()
+
+		cfg := &config.Config{
+			ServerPort:               "0",
+			OwnerPrivateKey:          "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+			SignerPrivateKey:         "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
+			ClearnodeURL:             mockClearnode.GetURL(),
+			TokenSymbol:              "unsupported-token", // This will cause operational failure
+			StandardTipAmount:        "10",
+			StandardTipAmountDecimal: decimal.RequireFromString("10.0"),
+			LogLevel:                 "debug",
+		}
+
+		client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL, cfg.TokenSymbol, cfg.StandardTipAmountDecimal, 1)
+		require.NoError(t, err)
+
+		// Connect and authenticate first
+		err = client.Connect()
+		require.NoError(t, err)
+		time.Sleep(100 * time.Millisecond)
+		err = client.Authenticate()
+		require.NoError(t, err)
+
+		server := NewServer(cfg, client)
+
+		testAddress := common.HexToAddress("0x742D35CC6634c0532925a3B8c17D18fBe3b78890").Hex()
+		requestBody := FaucetRequest{
+			UserAddress: testAddress,
+		}
+		jsonBody, err := json.Marshal(requestBody)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(jsonBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		server.router.ServeHTTP(w, req)
+
+		// Should return service unavailable due to operational failure
+		assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+
+		var errorResponse ErrorResponse
+		err = json.Unmarshal(w.Body.Bytes(), &errorResponse)
+		require.NoError(t, err)
+		assert.Equal(t, ErrServiceUnavailable, errorResponse.Error)
+	})
+}
+
+// MockOperationalFailureServer simulates a server that allows connection but fails operational checks
+type MockOperationalFailureServer struct {
+	server   *httptest.Server
+	upgrader websocket.Upgrader
+}
+
+func NewMockOperationalFailureServer() *MockOperationalFailureServer {
+	mock := &MockOperationalFailureServer{
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool { return true },
+		},
+	}
+
+	mock.server = httptest.NewServer(http.HandlerFunc(mock.handleWebSocket))
+	return mock
+}
+
+func (m *MockOperationalFailureServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	conn, err := m.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	for {
+		var message clearnode.RPCMessage
+		err := conn.ReadJSON(&message)
+		if err != nil {
+			break
+		}
+
+		if len(message.Req) >= 4 {
+			requestID := message.Req[0]
+			method := message.Req[1].(string)
+			timestamp := message.Req[3]
+
+			switch method {
+			case "auth_request":
+				m.sendAuthChallenge(conn, requestID, timestamp)
+			case "auth_verify":
+				m.sendAuthVerifyResponse(conn, requestID, timestamp)
+			case "get_assets":
+				m.sendEmptyAssetsResponse(conn, requestID, timestamp) // No supported assets
+			case "get_ledger_balances":
+				m.sendEmptyBalancesResponse(conn, requestID, timestamp)
+			}
+		}
+	}
+}
+
+func (m *MockOperationalFailureServer) sendAuthChallenge(conn *websocket.Conn, requestID, timestamp interface{}) {
+	response := clearnode.RPCMessage{
+		Res: []interface{}{
+			requestID,
+			"auth_challenge",
+			map[string]interface{}{
+				"challenge_message": "test-challenge-123",
+			},
+			timestamp,
+		},
+	}
+	conn.WriteJSON(response)
+}
+
+func (m *MockOperationalFailureServer) sendAuthVerifyResponse(conn *websocket.Conn, requestID, timestamp interface{}) {
+	response := clearnode.RPCMessage{
+		Res: []interface{}{
+			requestID,
+			"auth_verify",
+			map[string]interface{}{
+				"success":   true,
+				"jwt_token": "mock-jwt-token",
+			},
+			timestamp,
+		},
+	}
+	conn.WriteJSON(response)
+}
+
+func (m *MockOperationalFailureServer) sendEmptyAssetsResponse(conn *websocket.Conn, requestID, timestamp interface{}) {
+	response := clearnode.RPCMessage{
+		Res: []interface{}{
+			requestID,
+			"get_assets",
+			map[string]interface{}{
+				"assets": []interface{}{}, // No assets - will cause operational failure
+			},
+			timestamp,
+		},
+	}
+	conn.WriteJSON(response)
+}
+
+func (m *MockOperationalFailureServer) sendEmptyBalancesResponse(conn *websocket.Conn, requestID, timestamp interface{}) {
+	response := clearnode.RPCMessage{
+		Res: []interface{}{
+			requestID,
+			"get_ledger_balances",
+			map[string]interface{}{
+				"ledger_balances": []interface{}{}, // No balances
+			},
+			timestamp,
+		},
+	}
+	conn.WriteJSON(response)
+}
+
+func (m *MockOperationalFailureServer) GetURL() string {
+	return "ws" + strings.TrimPrefix(m.server.URL, "http")
+}
+
+func (m *MockOperationalFailureServer) Close() {
+	m.server.Close()
 }

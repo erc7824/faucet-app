@@ -14,11 +14,12 @@ import (
 
 // Error message constants
 const (
-	ErrInvalidRequestFormat  = "Invalid request format. Expected JSON with 'userAddress' field."
-	ErrInvalidAddressFormat  = "Invalid address format."
-	ErrServiceUnavailable   = "Faucet service is currently unavailable. Please try again later."
-	ErrTransferFailed       = "Failed to send tokens. Please try again later."
-	MsgTokensSentSuccessfully = "Tokens sent successfully"
+	ErrInvalidRequestFormat      = "Invalid request format. Expected JSON with 'userAddress' field."
+	ErrInvalidAddressFormat      = "Invalid address format."
+	ErrClearnodeConnectionFailed = "Failed to connect to Clearnode."
+	ErrServiceUnavailable        = "Faucet service is currently unavailable."
+	ErrTransferFailed            = "Failed to send tokens."
+	MsgTokensSentSuccessfully    = "Tokens sent successfully"
 )
 
 type Server struct {
@@ -108,12 +109,28 @@ func (s *Server) requestTokens(c *gin.Context) {
 
 	logger.Infof("Processing faucet request for address: %s", userAddress)
 
-	// Use the configured token symbol directly (validation done at startup)
-	asset := s.config.TokenSymbol
+	// Ensure client is connected
+	if err := s.clearnodeClient.EnsureConnected(); err != nil {
+		logger.Errorf("Connection failed for %s: %v", userAddress, err)
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error: ErrClearnodeConnectionFailed,
+		})
+		return
+	}
 
+	// Ensure client is operational
+	if err := s.clearnodeClient.EnsureOperational(); err != nil {
+		logger.Errorf("Service not operational for %s: %v", userAddress, err)
+		c.JSON(http.StatusServiceUnavailable, ErrorResponse{
+			Error: ErrServiceUnavailable,
+		})
+		return
+	}
+
+	// Perform the transfer
 	result, err := s.clearnodeClient.Transfer(
 		userAddress,
-		asset,
+		s.config.TokenSymbol,
 		s.config.StandardTipAmountDecimal,
 	)
 	if err != nil {
