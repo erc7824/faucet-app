@@ -3,7 +3,7 @@ config:
   logLevel: debug
   clearnodeWsUrl: wss://canarynet.yellow.com/ws
   token:
-    symbol: usdc
+    symbol: ytest.usd
     tipAmount: 0.1
   minTransferCount: 5
   envSecret: ""

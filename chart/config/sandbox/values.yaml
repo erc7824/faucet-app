@@ -3,7 +3,7 @@ config:
   logLevel: debug
   clearnodeWsUrl: wss://clearnet-sandbox.yellow.com/ws
   token:
-    symbol: usdc
+    symbol: ytest.usd
     tipAmount: 10
   minTransferCount: 5
   envSecret: ""
