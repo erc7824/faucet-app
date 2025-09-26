@@ -3,6 +3,7 @@ package clearnode
 import (
 	"testing"
 
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -12,7 +13,7 @@ func TestNewClientValidation(t *testing.T) {
 		sameKey := "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 		mockURL := "ws://localhost:8080"
 
-		client, err := NewClient(sameKey, sameKey, mockURL)
+		client, err := NewClient(sameKey, sameKey, mockURL, "usdc", decimal.NewFromInt(10), 1)
 
 		assert.Nil(t, client)
 		require.Error(t, err)
@@ -24,7 +25,7 @@ func TestNewClientValidation(t *testing.T) {
 		signerKey := "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
 		mockURL := "ws://localhost:8080"
 
-		client, err := NewClient(ownerKey, signerKey, mockURL)
+		client, err := NewClient(ownerKey, signerKey, mockURL, "usdc", decimal.NewFromInt(10), 1)
 
 		assert.NotNil(t, client)
 		require.NoError(t, err)
@@ -41,7 +42,7 @@ func TestNewClientValidation(t *testing.T) {
 		signerKey := "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
 		mockURL := "ws://localhost:8080"
 
-		client, err := NewClient(ownerKey, signerKey, mockURL)
+		client, err := NewClient(ownerKey, signerKey, mockURL, "usdc", decimal.NewFromInt(10), 1)
 
 		assert.NotNil(t, client)
 		require.NoError(t, err)
@@ -53,7 +54,7 @@ func TestNewClientValidation(t *testing.T) {
 		signerKey := baseKey // Same key without 0x prefix
 		mockURL := "ws://localhost:8080"
 
-		client, err := NewClient(ownerKey, signerKey, mockURL)
+		client, err := NewClient(ownerKey, signerKey, mockURL, "usdc", decimal.NewFromInt(10), 1)
 
 		assert.Nil(t, client)
 		require.Error(t, err)

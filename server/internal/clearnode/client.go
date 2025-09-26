@@ -26,6 +26,10 @@ type Client struct {
 	signerAddress    common.Address
 	url              string
 
+	tokenSymbol       string
+	standardTipAmount decimal.Decimal
+	minTransferCount  int
+
 	conn      *websocket.Conn
 	jwtToken  string
 	lastReqID atomic.Uint64
@@ -84,7 +88,7 @@ type TransferResult struct {
 	Status        string          `json:"status"`
 }
 
-func NewClient(ownerPrivateKeyHex, signerPrivateKeyHex, clearnodeURL string) (*Client, error) {
+func NewClient(ownerPrivateKeyHex, signerPrivateKeyHex, clearnodeURL string, tokenSymbol string, standardTipAmount decimal.Decimal, minTransferCount int) (*Client, error) {
 	// Clean the owner private key (remove 0x prefix if present)
 	if len(ownerPrivateKeyHex) > 2 && ownerPrivateKeyHex[:2] == "0x" {
 		ownerPrivateKeyHex = ownerPrivateKeyHex[2:]
@@ -118,13 +122,16 @@ func NewClient(ownerPrivateKeyHex, signerPrivateKeyHex, clearnodeURL string) (*C
 	eip712Signer := NewEIP712Signer(ownerPrivateKey)
 
 	return &Client{
-		ownerPrivateKey:  ownerPrivateKey,
-		ownerAddress:     ownerAddress,
-		signerPrivateKey: signerPrivateKey,
-		signerAddress:    signerAddress,
-		url:              clearnodeURL,
-		eip712Signer:     eip712Signer,
-		pendingRequests:  make(map[uint64]chan *RPCResponse),
+		ownerPrivateKey:   ownerPrivateKey,
+		ownerAddress:      ownerAddress,
+		signerPrivateKey:  signerPrivateKey,
+		signerAddress:     signerAddress,
+		url:               clearnodeURL,
+		tokenSymbol:       tokenSymbol,
+		standardTipAmount: standardTipAmount,
+		minTransferCount:  minTransferCount,
+		eip712Signer:      eip712Signer,
+		pendingRequests:   make(map[uint64]chan *RPCResponse),
 	}, nil
 }
 
@@ -314,10 +321,6 @@ func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
 }
 
 func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
-	if err := c.EnsureConnected(); err != nil {
-		return nil, err
-	}
-
 	transferData := TransferRequest{
 		Destination: destination,
 		Allocations: []Allocation{
@@ -628,6 +631,57 @@ func (c *Client) EnsureConnected() error {
 	}
 
 	logger.Info("Successfully reconnected and re-authenticated")
+	return nil
+}
+
+func (c *Client) ValidateTokenSupport(tokenSymbol string) error {
+	logger.Debugf("Validating token support for: %s", tokenSymbol)
+
+	assets, err := c.GetAssets()
+	if err != nil {
+		return fmt.Errorf("failed to fetch supported assets: %w", err)
+	}
+
+	for _, asset := range assets {
+		if asset.Symbol == tokenSymbol {
+			logger.Debugf("Token '%s' is supported by Clearnode (address: %s, decimals: %d)",
+				tokenSymbol, asset.Token, asset.Decimals)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("token '%s' is not supported by Clearnode", tokenSymbol)
+}
+
+func (c *Client) ValidateFaucetBalance(tokenSymbol string, standardTipAmount decimal.Decimal, minTransferCount int) error {
+	logger.Debug("Validating faucet balance")
+
+	balance, err := c.GetFaucetBalance(tokenSymbol)
+	if err != nil {
+		return fmt.Errorf("failed to fetch faucet balance: %w", err)
+	}
+
+	minRequiredBalance := standardTipAmount.Mul(decimal.NewFromInt(int64(minTransferCount)))
+
+	if balance.Amount.LessThan(minRequiredBalance) {
+		return fmt.Errorf("insufficient %s balance: %s (required: %s for %d transfers)",
+			tokenSymbol, balance.Amount.String(), minRequiredBalance.String(), minTransferCount)
+	}
+
+	logger.Infof("✓ Sufficient %s balance: %s",
+		tokenSymbol, balance.Amount.String())
+	return nil
+}
+
+func (c *Client) EnsureOperational() error {
+	if err := c.ValidateTokenSupport(c.tokenSymbol); err != nil {
+		return fmt.Errorf("token validation failed: %w", err)
+	}
+
+	if err := c.ValidateFaucetBalance(c.tokenSymbol, c.standardTipAmount, c.minTransferCount); err != nil {
+		return fmt.Errorf("balance check failed: %w", err)
+	}
+
 	return nil
 }
 
