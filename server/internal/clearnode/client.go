@@ -158,18 +158,17 @@ func (c *Client) Authenticate() error {
 	// Authentication parameters
 	appName := "Nitrolite Faucet"
 	scope := "app.transfer"
-	expire := "36000000"            // 10_000 hours
-	sessionKey := c.signerAddress   // Use signer address as session key
-	application := common.Address{} // Zero address if no specific app
+	expiresAt := uint64(36000000000) // 10_000 hours in milliseconds
+	sessionKey := c.signerAddress    // Use signer address as session key
+	application := common.Address{}  // Zero address if no specific app
 
 	// Step 1: Send auth_request
 	authRequestData := map[string]interface{}{
 		"address":     c.ownerAddress.Hex(),
 		"session_key": sessionKey.Hex(),
-		"app_name":    appName,
+		"application": appName,
 		"scope":       scope,
-		"expire":      expire,
-		"application": application.Hex(),
+		"expires_at":  expiresAt,
 		"allowances":  []map[string]interface{}{}, // Empty allowances for faucet
 	}
 
@@ -194,7 +193,7 @@ func (c *Client) Authenticate() error {
 		allowances,
 		scope,
 		application,
-		expire,
+		expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to sign challenge: %w", err)

@@ -1,8 +1,8 @@
 package clearnode
 
 import (
-	"math/big"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -25,12 +25,12 @@ func TestEIP712Signer_SignChallenge(t *testing.T) {
 	allowances := []Allowance{
 		{
 			Asset:  "usdc",
-			Amount: big.NewInt(1000000),
+			Amount: "1000000",
 		},
 	}
 	scope := "app.transfer"
 	application := common.Address{}
-	expire := "3600000000"
+	expiresAt := uint64(time.Now().Add(1000000 * time.Hour).Unix())
 
 	// Sign the challenge
 	signature, err := signer.SignChallenge(
@@ -40,7 +40,7 @@ func TestEIP712Signer_SignChallenge(t *testing.T) {
 		allowances,
 		scope,
 		application,
-		expire,
+		expiresAt,
 	)
 
 	if err != nil {
