@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -22,7 +23,7 @@ func TestEIP712Signer_SignChallenge(t *testing.T) {
 	challengeToken := "test-challenge-123"
 	sessionKey := signer.GetAddress()
 	appName := "Test App"
-	allowances := []Allowance{
+	allowances := []rpc.Allowance{
 		{
 			Asset:  "usdc",
 			Amount: "1000000",

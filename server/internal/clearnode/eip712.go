@@ -5,16 +5,11 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 )
-
-// Allowance represents an asset allowance for EIP-712 signing
-type Allowance struct {
-	Asset  string `json:"asset"`
-	Amount string `json:"amount"`
-}
 
 // EIP712Signer handles EIP-712 structured data signing for Clearnode authentication
 type EIP712Signer struct {
@@ -34,7 +29,7 @@ func (s *EIP712Signer) SignChallenge(
 	challengeToken string,
 	sessionKey common.Address,
 	appName string,
-	allowances []Allowance,
+	allowances []rpc.Allowance,
 	scope string,
 	application common.Address,
 	expiresAt uint64,
