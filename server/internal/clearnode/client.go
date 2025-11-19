@@ -130,7 +130,7 @@ func (c *Client) Authenticate() error {
 	scope := "app.transfer"
 	expiresAt := uint64(time.Now().Add(10000 * time.Hour).Unix()) // 10_000 hours in seconds
 	sessionKey := c.signerAddress                                 // Use signer address as session key
-	applicationAddress := common.Address{}.Hex()                  // Zero address if no specific app
+	applicationAddress := common.Address{}                        // Zero address if no specific app
 
 	// Step 1: Send auth_request using a map to match the local server's expectations
 	// Note: The published rpc package types don't match the latest local server yet
@@ -163,7 +163,7 @@ func (c *Client) Authenticate() error {
 		appName,
 		allowances,
 		scope,
-		common.HexToAddress(applicationAddress),
+		applicationAddress,
 		expiresAt,
 	)
 	if err != nil {
@@ -308,7 +308,7 @@ func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*r
 		return nil, fmt.Errorf("transfer failed: %w", err)
 	}
 
-	logger.Info("Transfer completed successfully, destination: ", destination)
+	logger.Infof("Transfer completed successfully, destination: %s", destination)
 
 	// Parse the response data
 	result, err := c.parseTransferResult(response.Data, destination, asset, amount)
