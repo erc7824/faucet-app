@@ -181,7 +181,13 @@ func (m *MockClearnodeServer) handleTransfer(conn *websocket.Conn, requestID, ti
 			map[string]interface{}{
 				"transactions": []interface{}{
 					map[string]interface{}{
-						"id": "mock-tx-12345",
+						"id":          float64(12345), // Use number instead of string for ID
+						"asset":       asset,
+						"amount":      amountStr,
+						"to_account":  destination,
+						"from_account": "0x9fc51BEE23Fb53569c46CcF013400f0E19524bd2",
+						"tx_type":     "transfer",
+						"created_at":  time.Now().Format(time.RFC3339),
 					},
 				},
 			},
@@ -258,7 +264,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		// Verify response structure
 		assert.True(t, response.Success)
 		assert.Equal(t, MsgTokensSentSuccessfully, response.Message)
-		assert.Equal(t, "mock-tx-12345", response.TxID)
+		assert.Equal(t, "12345", response.TxID)
 		assert.Equal(t, "10", response.Amount)
 		assert.Equal(t, "usdc", response.Asset)
 		assert.Equal(t, testAddress, response.Destination)
@@ -374,7 +380,7 @@ func TestFaucetServerIntegration(t *testing.T) {
 		// Verify response structure
 		assert.True(t, response.Success)
 		assert.Equal(t, MsgTokensSentSuccessfully, response.Message)
-		assert.Equal(t, "mock-tx-12345", response.TxID)
+		assert.Equal(t, "12345", response.TxID)
 		assert.Equal(t, "10", response.Amount)
 		assert.Equal(t, "usdc", response.Asset)
 		assert.Equal(t, testAddress, response.Destination)

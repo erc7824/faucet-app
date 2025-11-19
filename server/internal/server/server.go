@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -78,7 +79,7 @@ func (s *Server) getInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"service":             "Nitrolite Faucet Server",
 		"version":             "1.0.0",
-		"faucet_address":      s.clearnodeClient.GetAddress(),
+		"faucet_address":      s.clearnodeClient.GetSessionKeyAddress(),
 		"standard_tip_amount": s.config.StandardTipAmountDecimal.String(),
 		"token_symbol":        s.config.TokenSymbol,
 		"endpoints":           []string{"/requestTokens"},
@@ -141,16 +142,30 @@ func (s *Server) requestTokens(c *gin.Context) {
 		return
 	}
 
+	// Extract transaction info from the response
+	var txID string
+	var amount string
+	var asset string
+	if len(result.Transactions) > 0 {
+		tx := result.Transactions[0]
+		txID = fmt.Sprintf("%d", tx.Id)
+		amount = tx.Amount.String()
+		asset = tx.Asset
+	} else {
+		amount = s.config.StandardTipAmountDecimal.String()
+		asset = s.config.TokenSymbol
+	}
+
 	logger.Infof("Successfully sent %s %s to %s (txID: %s)",
-		result.Amount.String(), result.Asset, result.Destination, result.TransactionID)
+		amount, asset, userAddress, txID)
 
 	c.JSON(http.StatusOK, FaucetResponse{
 		Success:     true,
 		Message:     MsgTokensSentSuccessfully,
-		TxID:        result.TransactionID,
-		Amount:      result.Amount.String(),
-		Asset:       result.Asset,
-		Destination: result.Destination,
+		TxID:        txID,
+		Amount:      amount,
+		Asset:       asset,
+		Destination: userAddress,
 	})
 }
 

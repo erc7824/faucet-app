@@ -33,7 +33,8 @@ func main() {
 		logger.Fatalf("Failed to create Clearnode client: %v", err)
 	}
 
-	logger.Infof("Faucet signer address: %s", client.GetAddress())
+	logger.Infof("Faucet owner address: %s", client.GetOwnerAddress())
+	logger.Infof("Faucet session key address: %s", client.GetSessionKeyAddress())
 
 	if err := client.Connect(); err != nil {
 		logger.Fatalf("Failed to connect to Clearnode: %v", err)

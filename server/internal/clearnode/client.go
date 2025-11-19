@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -55,37 +56,6 @@ type RPCResponse struct {
 	Method    string                 `json:"method"`
 	Data      map[string]interface{} `json:"data"`
 	Timestamp uint64                 `json:"timestamp"`
-}
-
-// Structured response types
-type Asset struct {
-	Token    string `json:"token"`
-	ChainID  int    `json:"chain_id"`
-	Symbol   string `json:"symbol"`
-	Decimals int    `json:"decimals"`
-}
-
-type Balance struct {
-	Asset  string          `json:"asset"`
-	Amount decimal.Decimal `json:"amount"`
-}
-
-type Allocation struct {
-	Asset  string          `json:"asset"`
-	Amount decimal.Decimal `json:"amount"`
-}
-
-type TransferRequest struct {
-	Destination string       `json:"destination"`
-	Allocations []Allocation `json:"allocations"`
-}
-
-type TransferResult struct {
-	TransactionID string          `json:"transaction_id"`
-	Amount        decimal.Decimal `json:"amount"`
-	Asset         string          `json:"asset"`
-	Destination   string          `json:"destination"`
-	Status        string          `json:"status"`
 }
 
 func NewClient(ownerPrivateKeyHex, signerPrivateKeyHex, clearnodeURL string, tokenSymbol string, standardTipAmount decimal.Decimal, minTransferCount int) (*Client, error) {
@@ -156,24 +126,24 @@ func (c *Client) Authenticate() error {
 	logger.Info("Starting authentication flow")
 
 	// Authentication parameters
-	appName := "Nitrolite Faucet"
+	appName := "clearnode" // "clearnode" to allow unlimited allowances
 	scope := "app.transfer"
-	expire := "36000000"            // 10_000 hours
-	sessionKey := c.signerAddress   // Use signer address as session key
-	application := common.Address{} // Zero address if no specific app
+	expiresAt := uint64(time.Now().Add(10000 * time.Hour).Unix()) // 10_000 hours in seconds
+	sessionKey := c.signerAddress                                 // Use signer address as session key
+	applicationAddress := common.Address{}                        // Zero address if no specific app
 
-	// Step 1: Send auth_request
-	authRequestData := map[string]interface{}{
+	// Step 1: Send auth_request using a map to match the local server's expectations
+	// Note: The published rpc package types don't match the latest local server yet
+	authRequest := map[string]interface{}{
 		"address":     c.ownerAddress.Hex(),
 		"session_key": sessionKey.Hex(),
-		"app_name":    appName,
+		"application": appName,
 		"scope":       scope,
-		"expire":      expire,
-		"application": application.Hex(),
-		"allowances":  []map[string]interface{}{}, // Empty allowances for faucet
+		"expires_at":  expiresAt,
+		"allowances":  []rpc.Allowance{}, // Use rpc.Allowance type for consistency
 	}
 
-	challengeResponse, err := c.sendRequest("auth_request", authRequestData)
+	challengeResponse, err := c.sendRequest("auth_request", authRequest)
 	if err != nil {
 		return fmt.Errorf("auth_request failed: %w", err)
 	}
@@ -186,15 +156,15 @@ func (c *Client) Authenticate() error {
 	logger.Debugf("Received challenge: %s", challengeMessage)
 
 	// Step 2: Sign the challenge using EIP-712
-	allowances := []Allowance{} // Empty allowances for faucet
+	allowances := []rpc.Allowance{} // Empty allowances for faucet
 	signature, err := c.eip712Signer.SignChallenge(
 		challengeMessage,
 		sessionKey,
 		appName,
 		allowances,
 		scope,
-		application,
-		expire,
+		applicationAddress,
+		expiresAt,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to sign challenge: %w", err)
@@ -274,7 +244,7 @@ func (c *Client) Authenticate() error {
 	}
 }
 
-func (c *Client) GetAssets() ([]Asset, error) {
+func (c *Client) GetAssets() ([]rpc.Asset, error) {
 	if err := c.EnsureConnected(); err != nil {
 		return nil, err
 	}
@@ -297,7 +267,7 @@ func (c *Client) GetAssets() ([]Asset, error) {
 	return assets, nil
 }
 
-func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
+func (c *Client) GetFaucetBalance(tokenSymbol string) (*rpc.LedgerBalance, error) {
 	if err := c.EnsureConnected(); err != nil {
 		return nil, err
 	}
@@ -320,13 +290,13 @@ func (c *Client) GetFaucetBalance(tokenSymbol string) (*Balance, error) {
 	return balance, nil
 }
 
-func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
-	transferData := TransferRequest{
+func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*rpc.TransferResponse, error) {
+	transferData := rpc.TransferRequest{
 		Destination: destination,
-		Allocations: []Allocation{
+		Allocations: []rpc.TransferAllocation{
 			{
-				Asset:  asset,
-				Amount: amount,
+				AssetSymbol: asset,
+				Amount:      amount,
 			},
 		},
 	}
@@ -338,7 +308,7 @@ func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*T
 		return nil, fmt.Errorf("transfer failed: %w", err)
 	}
 
-	logger.Info("Transfer completed successfully", "destination", destination)
+	logger.Infof("Transfer completed successfully, destination: %s", destination)
 
 	// Parse the response data
 	result, err := c.parseTransferResult(response.Data, destination, asset, amount)
@@ -494,13 +464,13 @@ func (c *Client) signMessage(data interface{}) (string, error) {
 
 // Parsing helper methods
 
-func (c *Client) parseAssets(data map[string]interface{}) ([]Asset, error) {
+func (c *Client) parseAssets(data map[string]interface{}) ([]rpc.Asset, error) {
 	assetsInterface, ok := data["assets"].([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid assets response format")
 	}
 
-	var assets []Asset
+	var assets []rpc.Asset
 	for _, assetInterface := range assetsInterface {
 		assetData, ok := assetInterface.(map[string]interface{})
 		if !ok {
@@ -512,18 +482,18 @@ func (c *Client) parseAssets(data map[string]interface{}) ([]Asset, error) {
 		decimals, _ := assetData["decimals"].(float64)
 		chainID, _ := assetData["chain_id"].(float64)
 
-		assets = append(assets, Asset{
+		assets = append(assets, rpc.Asset{
 			Token:    token,
-			ChainID:  int(chainID),
+			ChainID:  uint32(chainID),
 			Symbol:   symbol,
-			Decimals: int(decimals),
+			Decimals: uint8(decimals),
 		})
 	}
 
 	return assets, nil
 }
 
-func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol string) (*Balance, error) {
+func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol string) (*rpc.LedgerBalance, error) {
 	balancesInterface, ok := data["ledger_balances"].([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid ledger balances response format")
@@ -550,49 +520,43 @@ func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol stri
 			return nil, fmt.Errorf("failed to parse balance amount: %w", err)
 		}
 
-		return &Balance{
+		return &rpc.LedgerBalance{
 			Asset:  asset,
 			Amount: amount,
 		}, nil
 	}
 
-	return &Balance{
+	return &rpc.LedgerBalance{
 		Asset:  tokenSymbol,
 		Amount: decimal.Zero,
 	}, nil
 }
 
-func (c *Client) parseTransferResult(data map[string]interface{}, destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
+func (c *Client) parseTransferResult(data map[string]interface{}, destination, asset string, amount decimal.Decimal) (*rpc.TransferResponse, error) {
+	// Parse the response data into RPC TransferResponse
+	var response rpc.TransferResponse
+
 	transactionsInterface, ok := data["transactions"].([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("invalid transfer response format")
 	}
 
-	// Use the first transaction for the result
-	if len(transactionsInterface) == 0 {
-		return &TransferResult{
-			TransactionID: "",
-			Amount:        amount,
-			Asset:         asset,
-			Destination:   destination,
-			Status:        "completed",
-		}, nil
+	// Parse transactions
+	for _, txInterface := range transactionsInterface {
+		txDataRaw, err := json.Marshal(txInterface)
+		if err != nil {
+			continue
+		}
+
+		var tx rpc.LedgerTransaction
+		if err := json.Unmarshal(txDataRaw, &tx); err != nil {
+			continue
+		}
+
+		response.Transactions = append(response.Transactions, tx)
 	}
 
-	txData, ok := transactionsInterface[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid transaction data format")
-	}
-
-	txID, _ := txData["id"].(string)
-
-	return &TransferResult{
-		TransactionID: txID,
-		Amount:        amount,
-		Asset:         asset,
-		Destination:   destination,
-		Status:        "completed",
-	}, nil
+	return &response, nil
 }
 
 func (c *Client) Close() error {
@@ -685,6 +649,10 @@ func (c *Client) EnsureOperational() error {
 	return nil
 }
 
-func (c *Client) GetAddress() common.Address {
+func (c *Client) GetOwnerAddress() common.Address {
+	return c.ownerAddress
+}
+
+func (c *Client) GetSessionKeyAddress() common.Address {
 	return c.signerAddress
 }

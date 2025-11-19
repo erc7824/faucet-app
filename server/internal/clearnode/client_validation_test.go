@@ -32,9 +32,9 @@ func TestNewClientValidation(t *testing.T) {
 
 		// Verify addresses are different
 		assert.NotEqual(t, client.ownerAddress, client.signerAddress)
-		
-		// Verify GetAddress returns signer address
-		assert.Equal(t, client.signerAddress, client.GetAddress())
+
+		// Verify GetAddress returns sessionKey address
+		assert.Equal(t, client.signerAddress, client.GetSessionKeyAddress())
 	})
 
 	t.Run("should handle 0x prefixed keys correctly", func(t *testing.T) {

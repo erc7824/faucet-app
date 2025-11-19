@@ -5,16 +5,11 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 )
-
-// Allowance represents an asset allowance for EIP-712 signing
-type Allowance struct {
-	Asset  string   `json:"asset"`
-	Amount *big.Int `json:"amount"`
-}
 
 // EIP712Signer handles EIP-712 structured data signing for Clearnode authentication
 type EIP712Signer struct {
@@ -34,17 +29,17 @@ func (s *EIP712Signer) SignChallenge(
 	challengeToken string,
 	sessionKey common.Address,
 	appName string,
-	allowances []Allowance,
+	allowances []rpc.Allowance,
 	scope string,
 	application common.Address,
-	expire string,
+	expiresAt uint64,
 ) ([]byte, error) {
 	// Convert allowances to the format expected by TypedData
 	convertedAllowances := make([]map[string]interface{}, len(allowances))
 	for i, allowance := range allowances {
 		convertedAllowances[i] = map[string]interface{}{
 			"asset":  allowance.Asset,
-			"amount": allowance.Amount.String(),
+			"amount": allowance.Amount,
 		}
 	}
 
@@ -58,14 +53,13 @@ func (s *EIP712Signer) SignChallenge(
 				{Name: "challenge", Type: "string"},
 				{Name: "scope", Type: "string"},
 				{Name: "wallet", Type: "address"},
-				{Name: "application", Type: "address"},
-				{Name: "participant", Type: "address"},
-				{Name: "expire", Type: "uint256"},
+				{Name: "session_key", Type: "address"},
+				{Name: "expires_at", Type: "uint64"},
 				{Name: "allowances", Type: "Allowance[]"},
 			},
 			"Allowance": {
 				{Name: "asset", Type: "string"},
-				{Name: "amount", Type: "uint256"},
+				{Name: "amount", Type: "string"},
 			},
 		},
 		PrimaryType: "Policy",
@@ -76,9 +70,8 @@ func (s *EIP712Signer) SignChallenge(
 			"challenge":   challengeToken,
 			"scope":       scope,
 			"wallet":      s.address.Hex(),
-			"application": application.Hex(),
-			"participant": sessionKey.Hex(),
-			"expire":      expire,
+			"session_key": sessionKey.Hex(),
+			"expires_at":  new(big.Int).SetUint64(expiresAt),
 			"allowances":  convertedAllowances,
 		},
 	}
