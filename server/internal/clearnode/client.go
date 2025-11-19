@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
 	"github.com/gorilla/websocket"
 	"github.com/shopspring/decimal"
 
@@ -126,11 +126,11 @@ func (c *Client) Authenticate() error {
 	logger.Info("Starting authentication flow")
 
 	// Authentication parameters
-	appName := "Nitrolite Faucet"
+	appName := "clearnode" // "clearnode" to allow unlimited allowances
 	scope := "app.transfer"
-	expiresAt := uint64(36000000000)             // 10_000 hours in milliseconds
-	sessionKey := c.signerAddress                // Use signer address as session key
-	applicationAddress := common.Address{}.Hex() // Zero address if no specific app
+	expiresAt := uint64(time.Now().Add(10000 * time.Hour).Unix()) // 10_000 hours in seconds
+	sessionKey := c.signerAddress                                 // Use signer address as session key
+	applicationAddress := common.Address{}.Hex()                  // Zero address if no specific app
 
 	// Step 1: Send auth_request using a map to match the local server's expectations
 	// Note: The published rpc package types don't match the latest local server yet
@@ -308,7 +308,7 @@ func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*r
 		return nil, fmt.Errorf("transfer failed: %w", err)
 	}
 
-	logger.Info("Transfer completed successfully", "destination", destination)
+	logger.Info("Transfer completed successfully, destination: ", destination)
 
 	// Parse the response data
 	result, err := c.parseTransferResult(response.Data, destination, asset, amount)
@@ -649,6 +649,10 @@ func (c *Client) EnsureOperational() error {
 	return nil
 }
 
-func (c *Client) GetAddress() common.Address {
+func (c *Client) GetOwnerAddress() common.Address {
+	return c.ownerAddress
+}
+
+func (c *Client) GetSessionKeyAddress() common.Address {
 	return c.signerAddress
 }

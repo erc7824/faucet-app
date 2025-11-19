@@ -79,7 +79,7 @@ func (s *Server) getInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"service":             "Nitrolite Faucet Server",
 		"version":             "1.0.0",
-		"faucet_address":      s.clearnodeClient.GetAddress(),
+		"faucet_address":      s.clearnodeClient.GetSessionKeyAddress(),
 		"standard_tip_amount": s.config.StandardTipAmountDecimal.String(),
 		"token_symbol":        s.config.TokenSymbol,
 		"endpoints":           []string{"/requestTokens"},
