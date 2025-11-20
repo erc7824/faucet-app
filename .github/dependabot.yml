@@ -9,3 +9,12 @@ updates:
     directory: "/server/" # Location of package manifests
     schedule:
       interval: "daily"
+    commit-message:
+        prefix: "chore(gomod)"
+    labels:
+      - "dependencies"
+      - "gomod"
+    groups:
+      gomod-dependencies:
+        patterns:
+          - "*"
