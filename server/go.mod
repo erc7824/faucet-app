@@ -3,7 +3,7 @@ module faucet-server
 go 1.25
 
 require (
-	github.com/erc7824/nitrolite/clearnode v0.5.0
+	github.com/erc7824/nitrolite/clearnode v0.5.2
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/gin-gonic/gin v1.11.0
 	github.com/gorilla/websocket v1.5.3
