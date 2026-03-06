@@ -1,17 +1,25 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	"faucet-server/internal/clearnode"
 	"faucet-server/internal/config"
 	"faucet-server/internal/logger"
 )
+
+// ClearnodeClient is the interface the server uses to interact with Clearnode.
+type ClearnodeClient interface {
+	GetOwnerAddress() string
+	EnsureConnected() error
+	EnsureOperational() error
+	Transfer(destination, asset string, amount decimal.Decimal) (*clearnode.TransferResult, error)
+}
 
 // Error message constants
 const (
@@ -25,7 +33,7 @@ const (
 
 type Server struct {
 	config          *config.Config
-	clearnodeClient *clearnode.Client
+	clearnodeClient ClearnodeClient
 	router          *gin.Engine
 }
 
@@ -46,7 +54,7 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewServer(cfg *config.Config, client *clearnode.Client) *Server {
+func NewServer(cfg *config.Config, client ClearnodeClient) *Server {
 	if cfg.LogLevel == "debug" {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -79,7 +87,7 @@ func (s *Server) getInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"service":             "Nitrolite Faucet Server",
 		"version":             "1.0.0",
-		"faucet_address":      s.clearnodeClient.GetSessionKeyAddress(),
+		"faucet_address":      s.clearnodeClient.GetOwnerAddress(),
 		"standard_tip_amount": s.config.StandardTipAmountDecimal.String(),
 		"token_symbol":        s.config.TokenSymbol,
 		"endpoints":           []string{"/requestTokens"},
@@ -142,19 +150,9 @@ func (s *Server) requestTokens(c *gin.Context) {
 		return
 	}
 
-	// Extract transaction info from the response
-	var txID string
-	var amount string
-	var asset string
-	if len(result.Transactions) > 0 {
-		tx := result.Transactions[0]
-		txID = fmt.Sprintf("%d", tx.Id)
-		amount = tx.Amount.String()
-		asset = tx.Asset
-	} else {
-		amount = s.config.StandardTipAmountDecimal.String()
-		asset = s.config.TokenSymbol
-	}
+	txID := result.TxID
+	amount := result.Amount
+	asset := result.Asset
 
 	logger.Infof("Successfully sent %s %s to %s (txID: %s)",
 		amount, asset, userAddress, txID)

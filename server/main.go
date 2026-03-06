@@ -28,23 +28,13 @@ func main() {
 	logger.Infof("Configuration loaded: Server port=%s, Clearnode URL=%s",
 		cfg.ServerPort, cfg.ClearnodeURL)
 
-	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.SignerPrivateKey, cfg.ClearnodeURL, cfg.TokenSymbol, cfg.StandardTipAmountDecimal, cfg.MinTransferCount)
+	client, err := clearnode.NewClient(cfg.OwnerPrivateKey, cfg.ClearnodeURL, cfg.TokenSymbol, cfg.StandardTipAmountDecimal, cfg.MinTransferCount)
 	if err != nil {
 		logger.Fatalf("Failed to create Clearnode client: %v", err)
 	}
 
 	logger.Infof("Faucet owner address: %s", client.GetOwnerAddress())
-	logger.Infof("Faucet session key address: %s", client.GetSessionKeyAddress())
-
-	if err := client.Connect(); err != nil {
-		logger.Fatalf("Failed to connect to Clearnode: %v", err)
-	}
-
-	if err := client.Authenticate(); err != nil {
-		logger.Fatalf("Failed to authenticate with Clearnode: %v", err)
-	}
-
-	logger.Info("Successfully connected and authenticated with Clearnode")
+	logger.Info("Successfully connected to Clearnode")
 
 	if err := client.EnsureOperational(); err != nil {
 		logger.Fatalf("Operational check failed: %v", err)
