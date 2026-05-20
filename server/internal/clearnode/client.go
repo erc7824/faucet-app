@@ -96,21 +96,28 @@ func (c *Client) EnsureConnected() error {
 
 	// Slow path: write lock with double-check to prevent thundering-herd reconnects.
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	select {
 	case <-c.sdkClient.WaitCh():
 		// Still disconnected; reconnect now.
 	default:
+		c.mu.Unlock()
 		return nil // Another goroutine already reconnected while we waited for the lock.
 	}
 
 	logger.Info("Connection lost, reconnecting to Clearnode...")
 	newClient, err := c.newSDKClient()
 	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to reconnect: %w", err)
 	}
+	oldClient := c.sdkClient
 	c.sdkClient = newClient
+	c.mu.Unlock() // Release before closing old client to avoid holding lock during I/O.
+
+	if err := oldClient.Close(); err != nil {
+		logger.Errorf("Error closing stale Clearnode client: %v", err)
+	}
 	logger.Info("Successfully reconnected to Clearnode")
 	return nil
 }

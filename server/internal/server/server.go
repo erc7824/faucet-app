@@ -122,17 +122,17 @@ func (s *Server) requestTokens(c *gin.Context) {
 
 	userAddress = common.HexToAddress(userAddress).Hex()
 
-	// Atomically check-and-record rate limits before any Clearnode calls.
+	// Atomically check-and-record both keys under one lock. This prevents a
+	// blocked IP from burning the wallet's cooldown slot and eliminates TOCTOU.
 	// Every accepted request (including ones that later fail) consumes a slot,
 	// preventing unlimited probing via induced failures.
 	clientIP := c.ClientIP()
-	if !s.rateLimiter.checkAndRecord(userAddress) {
-		logger.Warnf("Rate limit exceeded for address %s", userAddress)
-		c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: ErrRateLimitExceeded})
-		return
-	}
-	if !s.rateLimiter.checkAndRecord(clientIP) {
-		logger.Warnf("Rate limit exceeded for IP %s (address: %s)", clientIP, userAddress)
+	if allowed, blocked := s.rateLimiter.checkAndRecordBoth(userAddress, clientIP); !allowed {
+		if blocked == "address" {
+			logger.Warnf("Rate limit exceeded for address %s", userAddress)
+		} else {
+			logger.Warnf("Rate limit exceeded for IP %s (address: %s)", clientIP, userAddress)
+		}
 		c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: ErrRateLimitExceeded})
 		return
 	}
@@ -165,6 +165,13 @@ func (s *Server) requestTokens(c *gin.Context) {
 	)
 	if err != nil {
 		logger.Errorf("Transfer failed for %s: %v", userAddress, err)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: ErrTransferFailed,
+		})
+		return
+	}
+	if result == nil {
+		logger.Errorf("Transfer returned nil result for %s", userAddress)
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Error: ErrTransferFailed,
 		})

@@ -33,12 +33,12 @@ func main() {
 		logger.Fatalf("Failed to create Clearnode client: %v", err)
 	}
 
-	logger.Infof("Faucet owner address: %s", client.GetOwnerAddress())
-	logger.Info("Successfully connected to Clearnode")
-
 	if err := client.EnsureOperational(); err != nil {
 		logger.Fatalf("Operational check failed: %v", err)
 	}
+
+	logger.Infof("Faucet owner address: %s", client.GetOwnerAddress())
+	logger.Info("Successfully connected to Clearnode")
 
 	httpServer := server.NewServer(cfg, client)
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ func defaultMock() *mockClearnodeClient {
 
 func TestMain(m *testing.M) {
 	_ = logger.Initialize("debug")
-	m.Run()
+	os.Exit(m.Run())
 }
 
 func TestRequestTokens_Success(t *testing.T) {
