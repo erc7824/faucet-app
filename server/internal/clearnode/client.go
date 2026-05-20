@@ -1,615 +1,158 @@
 package clearnode
 
 import (
-	"crypto/ecdsa"
-	"encoding/json"
+	"context"
 	"fmt"
+	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/erc7824/nitrolite/clearnode/pkg/rpc"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/gorilla/websocket"
+	"github.com/erc7824/nitrolite/pkg/core"
+	"github.com/erc7824/nitrolite/pkg/sign"
+	sdk "github.com/erc7824/nitrolite/sdk/go"
 	"github.com/shopspring/decimal"
 
 	"faucet-server/internal/logger"
 )
 
-const RESPONSE_TIMEOUT_SEC = 5
+// TransferResult holds the result of a token transfer.
+type TransferResult struct {
+	TxID   string
+	Amount string
+	Asset  string
+}
 
+// Client wraps the Nitrolite SDK client for faucet operations.
 type Client struct {
-	ownerPrivateKey  *ecdsa.PrivateKey
-	ownerAddress     common.Address
-	signerPrivateKey *ecdsa.PrivateKey
-	signerAddress    common.Address
-	url              string
+	mu           sync.RWMutex
+	sdkClient    *sdk.Client
+	newSDKClient func() (*sdk.Client, error) // captures parsed signers; no raw key hex stored
 
-	tokenSymbol       string
-	standardTipAmount decimal.Decimal
-	minTransferCount  int
-
-	conn      *websocket.Conn
-	jwtToken  string
-	lastReqID atomic.Uint64
-	mu        sync.RWMutex
-
-	// EIP-712 signer for authentication
-	eip712Signer *EIP712Signer
-
-	// Response handling
-	pendingRequests map[uint64]chan *RPCResponse
-	responseMu      sync.RWMutex
+	tokenSymbol      string
+	tipAmount        decimal.Decimal
+	minTransferCount int
 }
 
-type RPCMessage struct {
-	Req []interface{} `json:"req,omitempty"`
-	Res []interface{} `json:"res,omitempty"`
-	Sid string        `json:"sid,omitempty"`
-	Sig []string      `json:"sig"`
-}
-
-type RPCResponse struct {
-	RequestID uint64                 `json:"request_id"`
-	Method    string                 `json:"method"`
-	Data      map[string]interface{} `json:"data"`
-	Timestamp uint64                 `json:"timestamp"`
-}
-
-func NewClient(ownerPrivateKeyHex, signerPrivateKeyHex, clearnodeURL string, tokenSymbol string, standardTipAmount decimal.Decimal, minTransferCount int) (*Client, error) {
-	// Clean the owner private key (remove 0x prefix if present)
-	if len(ownerPrivateKeyHex) > 2 && ownerPrivateKeyHex[:2] == "0x" {
-		ownerPrivateKeyHex = ownerPrivateKeyHex[2:]
-	}
-
-	ownerPrivateKey, err := crypto.HexToECDSA(ownerPrivateKeyHex)
+func NewClient(privateKeyHex, clearnodeURL, tokenSymbol string, tipAmount decimal.Decimal, minTransferCount int) (*Client, error) {
+	// Parse signers once — raw key hex is used here and not retained on the struct.
+	msgSigner, err := sign.NewEthereumMsgSigner(privateKeyHex)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse owner private key: %w", err)
+		return nil, fmt.Errorf("failed to create message signer: %w", err)
 	}
 
-	ownerAddress := crypto.PubkeyToAddress(ownerPrivateKey.PublicKey)
-
-	// Clean the signer private key (remove 0x prefix if present)
-	if len(signerPrivateKeyHex) > 2 && signerPrivateKeyHex[:2] == "0x" {
-		signerPrivateKeyHex = signerPrivateKeyHex[2:]
-	}
-
-	signerPrivateKey, err := crypto.HexToECDSA(signerPrivateKeyHex)
+	stateSigner, err := core.NewChannelDefaultSigner(msgSigner)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse signer private key: %w", err)
+		return nil, fmt.Errorf("failed to create state signer: %w", err)
 	}
 
-	signerAddress := crypto.PubkeyToAddress(signerPrivateKey.PublicKey)
-
-	// Validate that owner and signer keys are different
-	if ownerPrivateKeyHex == signerPrivateKeyHex {
-		return nil, fmt.Errorf("owner and signer private keys must be different for security reasons")
+	txSigner, err := sign.NewEthereumRawSigner(privateKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tx signer: %w", err)
 	}
 
-	// Use owner private key for EIP-712 authentication
-	eip712Signer := NewEIP712Signer(ownerPrivateKey)
+	// factory captures already-parsed signers so reconnects don't need the raw key.
+	factory := func() (*sdk.Client, error) {
+		cl, err := sdk.NewClient(clearnodeURL, stateSigner, txSigner)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to Clearnode: %w", err)
+		}
+		return cl, nil
+	}
+
+	sdkClient, err := factory()
+	if err != nil {
+		return nil, err
+	}
 
 	return &Client{
-		ownerPrivateKey:   ownerPrivateKey,
-		ownerAddress:      ownerAddress,
-		signerPrivateKey:  signerPrivateKey,
-		signerAddress:     signerAddress,
-		url:               clearnodeURL,
-		tokenSymbol:       tokenSymbol,
-		standardTipAmount: standardTipAmount,
-		minTransferCount:  minTransferCount,
-		eip712Signer:      eip712Signer,
-		pendingRequests:   make(map[uint64]chan *RPCResponse),
+		sdkClient:        sdkClient,
+		newSDKClient:     factory,
+		tokenSymbol:      tokenSymbol,
+		tipAmount:        tipAmount,
+		minTransferCount: minTransferCount,
 	}, nil
 }
 
-func (c *Client) Connect() error {
-	logger.Infof("Connecting to Clearnode at %s", c.url)
-
-	conn, _, err := websocket.DefaultDialer.Dial(c.url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to connect to WebSocket: %w", err)
-	}
-
-	c.conn = conn
-
-	// Start listening for responses
-	go c.listenForResponses()
-
-	logger.Info("WebSocket connection established")
-	return nil
-}
-
-func (c *Client) Authenticate() error {
-	logger.Info("Starting authentication flow")
-
-	// Authentication parameters
-	appName := "clearnode" // "clearnode" to allow unlimited allowances
-	scope := "app.transfer"
-	expiresAt := uint64(time.Now().Add(10000 * time.Hour).Unix()) // 10_000 hours in seconds
-	sessionKey := c.signerAddress                                 // Use signer address as session key
-	applicationAddress := common.Address{}                        // Zero address if no specific app
-
-	// Step 1: Send auth_request using a map to match the local server's expectations
-	// Note: The published rpc package types don't match the latest local server yet
-	authRequest := map[string]interface{}{
-		"address":     c.ownerAddress.Hex(),
-		"session_key": sessionKey.Hex(),
-		"application": appName,
-		"scope":       scope,
-		"expires_at":  expiresAt,
-		"allowances":  []rpc.Allowance{}, // Use rpc.Allowance type for consistency
-	}
-
-	challengeResponse, err := c.sendRequest("auth_request", authRequest)
-	if err != nil {
-		return fmt.Errorf("auth_request failed: %w", err)
-	}
-
-	challengeMessage, ok := challengeResponse.Data["challenge_message"].(string)
-	if !ok {
-		return fmt.Errorf("invalid challenge response format")
-	}
-
-	logger.Debugf("Received challenge: %s", challengeMessage)
-
-	// Step 2: Sign the challenge using EIP-712
-	allowances := []rpc.Allowance{} // Empty allowances for faucet
-	signature, err := c.eip712Signer.SignChallenge(
-		challengeMessage,
-		sessionKey,
-		appName,
-		allowances,
-		scope,
-		applicationAddress,
-		expiresAt,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to sign challenge: %w", err)
-	}
-
-	signatureHex := hexutil.Encode(signature)
-	logger.Debugf("Generated EIP-712 signature: %s", signatureHex[:10]+"...")
-
-	// Step 3: Send auth_verify with the EIP-712 signature
-	verifyData := map[string]interface{}{
-		"challenge": challengeMessage,
-	}
-
-	requestID := c.lastReqID.Add(1)
-	timestamp := uint64(time.Now().UnixMilli())
-	req := []interface{}{requestID, "auth_verify", verifyData, timestamp}
-
-	message := RPCMessage{
-		Req: req,
-		Sig: []string{signatureHex},
-	}
-
-	// Create response channel
-	responseChan := make(chan *RPCResponse, 1)
-	c.responseMu.Lock()
-	c.pendingRequests[requestID] = responseChan
-	c.responseMu.Unlock()
-
-	// Send the message
-	c.mu.Lock()
-	if c.conn == nil {
-		c.mu.Unlock()
-		c.responseMu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.responseMu.Unlock()
-		return fmt.Errorf("connection is not available for Authentication and request %d", requestID)
-	}
-	err = c.conn.WriteJSON(message)
-	c.mu.Unlock()
-
-	if err != nil {
-		c.responseMu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.responseMu.Unlock()
-		return fmt.Errorf("failed to send auth_verify: %w", err)
-	}
-
-	logger.Debugf("Sent auth_verify with EIP-712 signature. Waiting for response...")
-
-	// Wait for response
-	select {
-	case verifyResponse := <-responseChan:
-		if verifyResponse.Method == "error" {
-			errorMsg, _ := verifyResponse.Data["error"].(string)
-			return fmt.Errorf("auth_verify error: %s", errorMsg)
-		}
-
-		success, ok := verifyResponse.Data["success"].(bool)
-		if !ok || !success {
-			return fmt.Errorf("authentication failed. Response does not include success: %v", verifyResponse.Data)
-		}
-
-		jwtToken, ok := verifyResponse.Data["jwt_token"].(string)
-		if ok {
-			c.jwtToken = jwtToken
-			logger.Debug("JWT token received and stored")
-		}
-
-		logger.Info("Authentication successful")
-		return nil
-
-	case <-time.After(RESPONSE_TIMEOUT_SEC * time.Second):
-		c.responseMu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.responseMu.Unlock()
-		return fmt.Errorf("auth_verify timeout")
-	}
-}
-
-func (c *Client) GetAssets() ([]rpc.Asset, error) {
-	if err := c.EnsureConnected(); err != nil {
-		return nil, err
-	}
-
-	logger.Debug("Fetching supported assets from Clearnode")
-
-	response, err := c.sendRequest("get_assets", map[string]interface{}{})
-	if err != nil {
-		return nil, fmt.Errorf("get_assets failed: %w", err)
-	}
-
-	logger.Debug("Successfully fetched supported assets")
-
-	// Parse the response data
-	assets, err := c.parseAssets(response.Data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse assets: %w", err)
-	}
-
-	return assets, nil
-}
-
-func (c *Client) GetFaucetBalance(tokenSymbol string) (*rpc.LedgerBalance, error) {
-	if err := c.EnsureConnected(); err != nil {
-		return nil, err
-	}
-
-	logger.Debugf("Fetching faucet balance for token: %s", tokenSymbol)
-
-	response, err := c.sendRequest("get_ledger_balances", map[string]interface{}{})
-	if err != nil {
-		return nil, fmt.Errorf("get_ledger_balances failed: %w", err)
-	}
-
-	logger.Debug("Successfully fetched ledger balances")
-
-	// Find balance for the specific token
-	balance, err := c.parseTokenBalance(response.Data, tokenSymbol)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse balance for %s: %w", tokenSymbol, err)
-	}
-
-	return balance, nil
-}
-
-func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*rpc.TransferResponse, error) {
-	transferData := rpc.TransferRequest{
-		Destination: destination,
-		Allocations: []rpc.TransferAllocation{
-			{
-				AssetSymbol: asset,
-				Amount:      amount,
-			},
-		},
-	}
-
-	logger.Infof("Sending transfer: %s %s to %s", amount, asset, destination)
-
-	response, err := c.sendRequest("transfer", transferData)
-	if err != nil {
-		return nil, fmt.Errorf("transfer failed: %w", err)
-	}
-
-	logger.Infof("Transfer completed successfully, destination: %s", destination)
-
-	// Parse the response data
-	result, err := c.parseTransferResult(response.Data, destination, asset, amount)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse transfer result: %w", err)
-	}
-
-	return result, nil
-}
-
-func (c *Client) sendRequest(method string, params interface{}) (*RPCResponse, error) {
-	requestID := c.lastReqID.Add(1)
-	timestamp := uint64(time.Now().UnixMilli())
-
-	req := []interface{}{requestID, method, params, timestamp}
-
-	signature, err := c.signMessage(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign message: %w", err)
-	}
-
-	message := RPCMessage{
-		Req: req,
-		Sig: []string{signature},
-	}
-
-	responseChan := make(chan *RPCResponse, 1)
-	c.responseMu.Lock()
-	c.pendingRequests[requestID] = responseChan
-	c.responseMu.Unlock()
-
-	c.mu.Lock()
-	if c.conn == nil {
-		c.mu.Unlock()
-		c.responseMu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.responseMu.Unlock()
-		return nil, fmt.Errorf("connection is not available for Transfer and request %d", requestID)
-	}
-	err = c.conn.WriteJSON(message)
-	c.mu.Unlock()
-
-	if err != nil {
-		c.responseMu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.responseMu.Unlock()
-		return nil, fmt.Errorf("failed to send message: %w", err)
-	}
-
-	logger.Debugf("Sent request %d: %s", requestID, method)
-
-	select {
-	case response := <-responseChan:
-		return response, nil
-	case <-time.After(RESPONSE_TIMEOUT_SEC * time.Second):
-		c.responseMu.Lock()
-		delete(c.pendingRequests, requestID)
-		c.responseMu.Unlock()
-		return nil, fmt.Errorf("request timeout")
-	}
-}
-
-func (c *Client) listenForResponses() {
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
-			c.conn = nil
-		}
-	}()
-
-	for {
-		var message RPCMessage
-		err := c.conn.ReadJSON(&message)
-		if err != nil {
-			logger.Errorf("Failed to read WebSocket message: %v", err)
-			break
-		}
-
-		if len(message.Res) >= 4 {
-			requestID, ok := message.Res[0].(float64)
-			if !ok {
-				logger.Warn("Invalid response format: missing request ID")
-				continue
-			}
-
-			method, ok := message.Res[1].(string)
-			if !ok {
-				logger.Warn("Invalid response format: missing method")
-				continue
-			}
-
-			data, ok := message.Res[2].(map[string]interface{})
-			if !ok {
-				logger.Warn("Invalid response format: missing data")
-				continue
-			}
-
-			timestamp, ok := message.Res[3].(float64)
-			if !ok {
-				logger.Warn("Invalid response format: missing timestamp")
-				continue
-			}
-
-			response := &RPCResponse{
-				RequestID: uint64(requestID),
-				Method:    method,
-				Data:      data,
-				Timestamp: uint64(timestamp),
-			}
-
-			logger.Debugf("Received response %d: %s", response.RequestID, response.Method)
-
-			// Check for error responses
-			if method == "error" {
-				errorMsg, ok := data["error"].(string)
-				if ok {
-					logger.Errorf("Server error for request %d: %s", response.RequestID, errorMsg)
-				}
-			}
-
-			// Send to waiting request
-			c.responseMu.RLock()
-			if ch, exists := c.pendingRequests[response.RequestID]; exists {
-				select {
-				case ch <- response:
-				default:
-				}
-			}
-			c.responseMu.RUnlock()
-
-			// Clean up
-			c.responseMu.Lock()
-			delete(c.pendingRequests, response.RequestID)
-			c.responseMu.Unlock()
-		}
-	}
-}
-
-func (c *Client) signMessage(data interface{}) (string, error) {
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal data: %w", err)
-	}
-
-	hash := crypto.Keccak256Hash(jsonData)
-	signature, err := crypto.Sign(hash.Bytes(), c.signerPrivateKey)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign: %w", err)
-	}
-
-	return hexutil.Encode(signature), nil
-}
-
-// Parsing helper methods
-
-func (c *Client) parseAssets(data map[string]interface{}) ([]rpc.Asset, error) {
-	assetsInterface, ok := data["assets"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid assets response format")
-	}
-
-	var assets []rpc.Asset
-	for _, assetInterface := range assetsInterface {
-		assetData, ok := assetInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		token, _ := assetData["token"].(string)
-		symbol, _ := assetData["symbol"].(string)
-		decimals, _ := assetData["decimals"].(float64)
-		chainID, _ := assetData["chain_id"].(float64)
-
-		assets = append(assets, rpc.Asset{
-			Token:    token,
-			ChainID:  uint32(chainID),
-			Symbol:   symbol,
-			Decimals: uint8(decimals),
-		})
-	}
-
-	return assets, nil
-}
-
-func (c *Client) parseTokenBalance(data map[string]interface{}, tokenSymbol string) (*rpc.LedgerBalance, error) {
-	balancesInterface, ok := data["ledger_balances"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid ledger balances response format")
-	}
-
-	for _, balanceInterface := range balancesInterface {
-		balanceData, ok := balanceInterface.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		asset, ok := balanceData["asset"].(string)
-		if !ok || asset != tokenSymbol {
-			continue
-		}
-
-		amountStr, ok := balanceData["amount"].(string)
-		if !ok {
-			continue
-		}
-
-		amount, err := decimal.NewFromString(amountStr)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse balance amount: %w", err)
-		}
-
-		return &rpc.LedgerBalance{
-			Asset:  asset,
-			Amount: amount,
-		}, nil
-	}
-
-	return &rpc.LedgerBalance{
-		Asset:  tokenSymbol,
-		Amount: decimal.Zero,
-	}, nil
-}
-
-func (c *Client) parseTransferResult(data map[string]interface{}, destination, asset string, amount decimal.Decimal) (*rpc.TransferResponse, error) {
-	// Parse the response data into RPC TransferResponse
-	var response rpc.TransferResponse
-
-	transactionsInterface, ok := data["transactions"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid transfer response format")
-	}
-
-	// Parse transactions
-	for _, txInterface := range transactionsInterface {
-		txDataRaw, err := json.Marshal(txInterface)
-		if err != nil {
-			continue
-		}
-
-		var tx rpc.LedgerTransaction
-		if err := json.Unmarshal(txDataRaw, &tx); err != nil {
-			continue
-		}
-
-		response.Transactions = append(response.Transactions, tx)
-	}
-
-	return &response, nil
-}
-
-func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn != nil {
-		err := c.conn.Close()
-		c.conn = nil
-		return err
-	}
-	return nil
-}
-
-// IsConnected checks if the WebSocket connection is active
-func (c *Client) IsConnected() bool {
+// GetOwnerAddress returns the faucet owner's Ethereum address.
+func (c *Client) GetOwnerAddress() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.conn != nil
+	return c.sdkClient.GetUserAddress()
 }
 
-// EnsureConnected ensures the client is connected and authenticated
+// EnsureConnected checks the connection and reconnects if necessary.
 func (c *Client) EnsureConnected() error {
-	if c.IsConnected() {
+	// Fast path: read WaitCh under read lock.
+	c.mu.RLock()
+	waitCh := c.sdkClient.WaitCh()
+	c.mu.RUnlock()
+
+	select {
+	case <-waitCh:
+		// Connection lost; fall through to reconnect.
+	default:
 		return nil
+	}
+
+	// Slow path: write lock with double-check to prevent thundering-herd reconnects.
+	c.mu.Lock()
+
+	select {
+	case <-c.sdkClient.WaitCh():
+		// Still disconnected; reconnect now.
+	default:
+		c.mu.Unlock()
+		return nil // Another goroutine already reconnected while we waited for the lock.
 	}
 
 	logger.Info("Connection lost, reconnecting to Clearnode...")
-
-	if err := c.Connect(); err != nil {
+	newClient, err := c.newSDKClient()
+	if err != nil {
+		c.mu.Unlock()
 		return fmt.Errorf("failed to reconnect: %w", err)
 	}
+	oldClient := c.sdkClient
+	c.sdkClient = newClient
+	c.mu.Unlock() // Release before closing old client to avoid holding lock during I/O.
 
-	if err := c.Authenticate(); err != nil {
-		return fmt.Errorf("failed to re-authenticate: %w", err)
+	if err := oldClient.Close(); err != nil {
+		logger.Errorf("Error closing stale Clearnode client: %v", err)
 	}
-
-	logger.Info("Successfully reconnected and re-authenticated")
+	logger.Info("Successfully reconnected to Clearnode")
 	return nil
 }
 
-func (c *Client) ValidateTokenSupport(tokenSymbol string) error {
-	logger.Debugf("Validating token support for: %s", tokenSymbol)
+// EnsureOperational validates token support and sufficient balance.
+func (c *Client) EnsureOperational() error {
+	if err := c.validateTokenSupport(c.tokenSymbol); err != nil {
+		return fmt.Errorf("token validation failed: %w", err)
+	}
 
-	assets, err := c.GetAssets()
+	if err := c.validateFaucetBalance(c.tokenSymbol, c.tipAmount, c.minTransferCount); err != nil {
+		return fmt.Errorf("balance check failed: %w", err)
+	}
+
+	return nil
+}
+
+const sdkCallTimeout = 30 * time.Second
+
+func (c *Client) validateTokenSupport(tokenSymbol string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCallTimeout)
+	defer cancel()
+
+	c.mu.RLock()
+	cl := c.sdkClient
+	c.mu.RUnlock()
+
+	assets, err := cl.GetAssets(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to fetch supported assets: %w", err)
 	}
 
 	for _, asset := range assets {
-		if asset.Symbol == tokenSymbol {
-			logger.Debugf("Token '%s' is supported by Clearnode (address: %s, decimals: %d)",
-				tokenSymbol, asset.Token, asset.Decimals)
+		if strings.EqualFold(asset.Symbol, tokenSymbol) {
+			logger.Debugf("Token '%s' is supported by Clearnode", tokenSymbol)
 			return nil
 		}
 	}
@@ -617,42 +160,71 @@ func (c *Client) ValidateTokenSupport(tokenSymbol string) error {
 	return fmt.Errorf("token '%s' is not supported by Clearnode", tokenSymbol)
 }
 
-func (c *Client) ValidateFaucetBalance(tokenSymbol string, standardTipAmount decimal.Decimal, minTransferCount int) error {
-	logger.Debug("Validating faucet balance")
+func (c *Client) validateFaucetBalance(tokenSymbol string, tipAmount decimal.Decimal, minTransferCount int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCallTimeout)
+	defer cancel()
 
-	balance, err := c.GetFaucetBalance(tokenSymbol)
+	c.mu.RLock()
+	cl := c.sdkClient
+	c.mu.RUnlock()
+
+	ownerAddress := cl.GetUserAddress()
+
+	balances, err := cl.GetBalances(ctx, ownerAddress)
 	if err != nil {
 		return fmt.Errorf("failed to fetch faucet balance: %w", err)
 	}
 
-	minRequiredBalance := standardTipAmount.Mul(decimal.NewFromInt(int64(minTransferCount)))
+	minRequired := tipAmount.Mul(decimal.NewFromInt(int64(minTransferCount)))
 
-	if balance.Amount.LessThan(minRequiredBalance) {
-		return fmt.Errorf("insufficient %s balance: %s (required: %s for %d transfers)",
-			tokenSymbol, balance.Amount.String(), minRequiredBalance.String(), minTransferCount)
+	for _, balance := range balances {
+		if strings.EqualFold(balance.Asset, tokenSymbol) {
+			if balance.Balance.LessThan(minRequired) {
+				return fmt.Errorf("insufficient %s balance: %s (required: %s for %d transfers)",
+					tokenSymbol, balance.Balance.String(), minRequired.String(), minTransferCount)
+			}
+			logger.Infof("✓ Sufficient %s balance: %s", tokenSymbol, balance.Balance.String())
+			return nil
+		}
 	}
 
-	logger.Infof("✓ Sufficient %s balance: %s",
-		tokenSymbol, balance.Amount.String())
-	return nil
+	return fmt.Errorf("insufficient %s balance: 0 (required: %s for %d transfers)",
+		tokenSymbol, minRequired.String(), minTransferCount)
 }
 
-func (c *Client) EnsureOperational() error {
-	if err := c.ValidateTokenSupport(c.tokenSymbol); err != nil {
-		return fmt.Errorf("token validation failed: %w", err)
+// Transfer sends tokens to the destination address.
+func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCallTimeout)
+	defer cancel()
+
+	c.mu.RLock()
+	cl := c.sdkClient
+	c.mu.RUnlock()
+
+	state, err := cl.Transfer(ctx, destination, asset, amount)
+	if err != nil {
+		return nil, fmt.Errorf("transfer failed: %w", err)
 	}
 
-	if err := c.ValidateFaucetBalance(c.tokenSymbol, c.standardTipAmount, c.minTransferCount); err != nil {
-		return fmt.Errorf("balance check failed: %w", err)
+	result := &TransferResult{
+		TxID:   state.Transition.TxID,
+		Amount: state.Transition.Amount.String(),
+		Asset:  state.Asset,
 	}
 
-	return nil
+	if result.Amount == "" || result.Amount == "0" {
+		result.Amount = amount.String()
+	}
+	if result.Asset == "" {
+		result.Asset = asset
+	}
+
+	return result, nil
 }
 
-func (c *Client) GetOwnerAddress() common.Address {
-	return c.ownerAddress
-}
-
-func (c *Client) GetSessionKeyAddress() common.Address {
-	return c.signerAddress
+// Close shuts down the Clearnode connection.
+func (c *Client) Close() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.sdkClient.Close()
 }

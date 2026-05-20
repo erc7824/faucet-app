@@ -1,17 +1,25 @@
 package server
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	"faucet-server/internal/clearnode"
 	"faucet-server/internal/config"
 	"faucet-server/internal/logger"
 )
+
+// ClearnodeClient is the interface the server uses to interact with Clearnode.
+type ClearnodeClient interface {
+	GetOwnerAddress() string
+	EnsureConnected() error
+	EnsureOperational() error
+	Transfer(destination, asset string, amount decimal.Decimal) (*clearnode.TransferResult, error)
+}
 
 // Error message constants
 const (
@@ -20,13 +28,15 @@ const (
 	ErrClearnodeConnectionFailed = "Failed to connect to Clearnode."
 	ErrServiceUnavailable        = "Faucet service is currently unavailable."
 	ErrTransferFailed            = "Failed to send tokens."
+	ErrRateLimitExceeded         = "Rate limit exceeded. Please try again later."
 	MsgTokensSentSuccessfully    = "Tokens sent successfully"
 )
 
 type Server struct {
 	config          *config.Config
-	clearnodeClient *clearnode.Client
+	clearnodeClient ClearnodeClient
 	router          *gin.Engine
+	rateLimiter     *rateLimiter
 }
 
 type FaucetRequest struct {
@@ -46,7 +56,7 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-func NewServer(cfg *config.Config, client *clearnode.Client) *Server {
+func NewServer(cfg *config.Config, client ClearnodeClient) *Server {
 	if cfg.LogLevel == "debug" {
 		gin.SetMode(gin.DebugMode)
 	} else {
@@ -54,6 +64,9 @@ func NewServer(cfg *config.Config, client *clearnode.Client) *Server {
 	}
 
 	router := gin.New()
+	// Disable X-Forwarded-For trust so c.ClientIP() uses RemoteAddr.
+	// Configure with actual LB IP(s) if deployed behind a trusted reverse proxy.
+	router.SetTrustedProxies(nil)
 
 	// Add middleware
 	router.Use(gin.Recovery())
@@ -64,6 +77,7 @@ func NewServer(cfg *config.Config, client *clearnode.Client) *Server {
 		config:          cfg,
 		clearnodeClient: client,
 		router:          router,
+		rateLimiter:     newRateLimiter(cfg.CooldownPeriodDuration),
 	}
 
 	server.setupRoutes()
@@ -79,7 +93,7 @@ func (s *Server) getInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"service":             "Nitrolite Faucet Server",
 		"version":             "1.0.0",
-		"faucet_address":      s.clearnodeClient.GetSessionKeyAddress(),
+		"faucet_address":      s.clearnodeClient.GetOwnerAddress(),
 		"standard_tip_amount": s.config.StandardTipAmountDecimal.String(),
 		"token_symbol":        s.config.TokenSymbol,
 		"endpoints":           []string{"/requestTokens"},
@@ -107,6 +121,21 @@ func (s *Server) requestTokens(c *gin.Context) {
 	}
 
 	userAddress = common.HexToAddress(userAddress).Hex()
+
+	// Atomically check-and-record both keys under one lock. This prevents a
+	// blocked IP from burning the wallet's cooldown slot and eliminates TOCTOU.
+	// Every accepted request (including ones that later fail) consumes a slot,
+	// preventing unlimited probing via induced failures.
+	clientIP := c.ClientIP()
+	if allowed, blocked := s.rateLimiter.checkAndRecordBoth(userAddress, clientIP); !allowed {
+		if blocked == "address" {
+			logger.Warnf("Rate limit exceeded for address %s", userAddress)
+		} else {
+			logger.Warnf("Rate limit exceeded for IP %s (address: %s)", clientIP, userAddress)
+		}
+		c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: ErrRateLimitExceeded})
+		return
+	}
 
 	logger.Infof("Processing faucet request for address: %s", userAddress)
 
@@ -141,20 +170,17 @@ func (s *Server) requestTokens(c *gin.Context) {
 		})
 		return
 	}
-
-	// Extract transaction info from the response
-	var txID string
-	var amount string
-	var asset string
-	if len(result.Transactions) > 0 {
-		tx := result.Transactions[0]
-		txID = fmt.Sprintf("%d", tx.Id)
-		amount = tx.Amount.String()
-		asset = tx.Asset
-	} else {
-		amount = s.config.StandardTipAmountDecimal.String()
-		asset = s.config.TokenSymbol
+	if result == nil {
+		logger.Errorf("Transfer returned nil result for %s", userAddress)
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: ErrTransferFailed,
+		})
+		return
 	}
+
+	txID := result.TxID
+	amount := result.Amount
+	asset := result.Asset
 
 	logger.Infof("Successfully sent %s %s to %s (txID: %s)",
 		amount, asset, userAddress, txID)
