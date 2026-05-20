@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/shopspring/decimal"
@@ -47,6 +48,8 @@ func defaultConfig() *config.Config {
 		TokenSymbol:              "usdc",
 		StandardTipAmount:        "10",
 		StandardTipAmountDecimal: decimal.RequireFromString("10"),
+		CooldownPeriod:           "24h",
+		CooldownPeriodDuration:   24 * time.Hour,
 		LogLevel:                 "debug",
 	}
 }
@@ -181,6 +184,110 @@ func TestRequestTokens_TransferFailure(t *testing.T) {
 	var resp ErrorResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, ErrTransferFailed, resp.Error)
+}
+
+func TestRateLimiting(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.CooldownPeriodDuration = 24 * time.Hour
+
+	t.Run("second request from same wallet is rejected", func(t *testing.T) {
+		mock := defaultMock()
+		srv := NewServer(cfg, mock)
+
+		testAddress := common.HexToAddress("0x742D35CC6634c0532925a3B8c17D18fBe3b78890").Hex()
+		body, _ := json.Marshal(FaucetRequest{UserAddress: testAddress})
+
+		// First request — should succeed
+		req1 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body))
+		req1.Header.Set("Content-Type", "application/json")
+		w1 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w1, req1)
+		assert.Equal(t, http.StatusOK, w1.Code)
+
+		// Second request same wallet — should be rate limited
+		req2 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body))
+		req2.Header.Set("Content-Type", "application/json")
+		w2 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w2, req2)
+		assert.Equal(t, http.StatusTooManyRequests, w2.Code)
+
+		var resp ErrorResponse
+		require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp))
+		assert.Equal(t, ErrRateLimitExceeded, resp.Error)
+	})
+
+	t.Run("failed transfer consumes rate limit slot", func(t *testing.T) {
+		mock := defaultMock()
+		mock.transferResult = nil
+		mock.transferErr = assert.AnError
+		srv := NewServer(cfg, mock)
+
+		testAddress := common.HexToAddress("0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF").Hex()
+		body, _ := json.Marshal(FaucetRequest{UserAddress: testAddress})
+
+		// First request fails at transfer but still consumes the rate-limit slot.
+		req1 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body))
+		req1.Header.Set("Content-Type", "application/json")
+		w1 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w1, req1)
+		assert.Equal(t, http.StatusInternalServerError, w1.Code)
+
+		// Second request is rate-limited because the slot was consumed on the first attempt.
+		req2 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body))
+		req2.Header.Set("Content-Type", "application/json")
+		w2 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w2, req2)
+		assert.Equal(t, http.StatusTooManyRequests, w2.Code)
+	})
+
+	t.Run("different wallets from different IPs are not rate limited by each other", func(t *testing.T) {
+		mock := defaultMock()
+		srv := NewServer(cfg, mock)
+
+		addr1 := common.HexToAddress("0x742D35CC6634c0532925a3B8c17D18fBe3b78890").Hex()
+		addr2 := common.HexToAddress("0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF").Hex()
+
+		body1, _ := json.Marshal(FaucetRequest{UserAddress: addr1})
+		body2, _ := json.Marshal(FaucetRequest{UserAddress: addr2})
+
+		req1 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body1))
+		req1.Header.Set("Content-Type", "application/json")
+		req1.RemoteAddr = "10.0.0.1:1234"
+		w1 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w1, req1)
+		assert.Equal(t, http.StatusOK, w1.Code)
+
+		req2 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body2))
+		req2.Header.Set("Content-Type", "application/json")
+		req2.RemoteAddr = "10.0.0.2:1234"
+		w2 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w2, req2)
+		assert.Equal(t, http.StatusOK, w2.Code)
+	})
+
+	t.Run("same IP with different wallet is still rate limited", func(t *testing.T) {
+		mock := defaultMock()
+		srv := NewServer(cfg, mock)
+
+		addr1 := common.HexToAddress("0x742D35CC6634c0532925a3B8c17D18fBe3b78890").Hex()
+		addr2 := common.HexToAddress("0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF").Hex()
+
+		body1, _ := json.Marshal(FaucetRequest{UserAddress: addr1})
+		body2, _ := json.Marshal(FaucetRequest{UserAddress: addr2})
+
+		req1 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body1))
+		req1.Header.Set("Content-Type", "application/json")
+		w1 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w1, req1)
+		assert.Equal(t, http.StatusOK, w1.Code)
+
+		// Different wallet, same IP — should be blocked by IP limit
+		req2 := httptest.NewRequest("POST", "/requestTokens", bytes.NewReader(body2))
+		req2.Header.Set("Content-Type", "application/json")
+		w2 := httptest.NewRecorder()
+		srv.router.ServeHTTP(w2, req2)
+		assert.Equal(t, http.StatusTooManyRequests, w2.Code)
+	})
 }
 
 func TestInfoEndpoint(t *testing.T) {

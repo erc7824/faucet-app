@@ -64,6 +64,7 @@ Set the following environment variables (or create a `.env` file):
 | `TOKEN_SYMBOL` | **Yes** | - | Token symbol to distribute | `usdc` |
 | `STANDARD_TIP_AMOUNT` | **Yes** | - | Amount to send per request (decimal format) | `10.0` |
 | `MIN_TRANSFER_COUNT` | **Yes** | - | Minimum number of transfers the server should have balance for | `5` |
+| `COOLDOWN_PERIOD` | **Yes** | - | Cooldown between requests per wallet/IP (Go duration format) | `24h` |
 | `LOG_LEVEL` | No | `info` | Logging level (debug/info/warn/error) | `info` |
 
 ## API Endpoints

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
 	"github.com/shopspring/decimal"
@@ -15,11 +16,13 @@ type Config struct {
 	TokenSymbol       string `env:"TOKEN_SYMBOL" env-required:"true" env-description:"Token symbol to distribute (e.g., usdc, weth)"`
 	StandardTipAmount string `env:"STANDARD_TIP_AMOUNT" env-required:"true" env-description:"Default amount to send per request"`
 	MinTransferCount  int    `env:"MIN_TRANSFER_COUNT" env-required:"true" env-description:"Number of transfers a server should have a balance for to operate"`
+	CooldownPeriod    string `env:"COOLDOWN_PERIOD" env-required:"true" env-description:"Cooldown between requests per wallet/IP (e.g. 24h, 1h30m)"`
 
 	LogLevel string `env:"LOG_LEVEL" env-default:"info" env-description:"Logging level (debug, info, warn, error)"`
 
-	// Parsed decimal amount (set after loading)
+	// Parsed values (set after loading)
 	StandardTipAmountDecimal decimal.Decimal
+	CooldownPeriodDuration   time.Duration
 }
 
 func Load() (*Config, error) {
@@ -51,8 +54,16 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("STANDARD_TIP_AMOUNT must be a positive number")
 	}
 
-	// Store the parsed decimal
 	c.StandardTipAmountDecimal = amount
+
+	d, err := time.ParseDuration(c.CooldownPeriod)
+	if err != nil {
+		return fmt.Errorf("COOLDOWN_PERIOD must be a valid duration (e.g. 24h, 1h30m): %w", err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("COOLDOWN_PERIOD must be positive")
+	}
+	c.CooldownPeriodDuration = d
 
 	return nil
 }

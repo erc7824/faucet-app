@@ -28,6 +28,7 @@ const (
 	ErrClearnodeConnectionFailed = "Failed to connect to Clearnode."
 	ErrServiceUnavailable        = "Faucet service is currently unavailable."
 	ErrTransferFailed            = "Failed to send tokens."
+	ErrRateLimitExceeded         = "Rate limit exceeded. Please try again later."
 	MsgTokensSentSuccessfully    = "Tokens sent successfully"
 )
 
@@ -35,6 +36,7 @@ type Server struct {
 	config          *config.Config
 	clearnodeClient ClearnodeClient
 	router          *gin.Engine
+	rateLimiter     *rateLimiter
 }
 
 type FaucetRequest struct {
@@ -62,6 +64,9 @@ func NewServer(cfg *config.Config, client ClearnodeClient) *Server {
 	}
 
 	router := gin.New()
+	// Disable X-Forwarded-For trust so c.ClientIP() uses RemoteAddr.
+	// Configure with actual LB IP(s) if deployed behind a trusted reverse proxy.
+	router.SetTrustedProxies(nil)
 
 	// Add middleware
 	router.Use(gin.Recovery())
@@ -72,6 +77,7 @@ func NewServer(cfg *config.Config, client ClearnodeClient) *Server {
 		config:          cfg,
 		clearnodeClient: client,
 		router:          router,
+		rateLimiter:     newRateLimiter(cfg.CooldownPeriodDuration),
 	}
 
 	server.setupRoutes()
@@ -115,6 +121,21 @@ func (s *Server) requestTokens(c *gin.Context) {
 	}
 
 	userAddress = common.HexToAddress(userAddress).Hex()
+
+	// Atomically check-and-record rate limits before any Clearnode calls.
+	// Every accepted request (including ones that later fail) consumes a slot,
+	// preventing unlimited probing via induced failures.
+	clientIP := c.ClientIP()
+	if !s.rateLimiter.checkAndRecord(userAddress) {
+		logger.Warnf("Rate limit exceeded for address %s", userAddress)
+		c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: ErrRateLimitExceeded})
+		return
+	}
+	if !s.rateLimiter.checkAndRecord(clientIP) {
+		logger.Warnf("Rate limit exceeded for IP %s (address: %s)", clientIP, userAddress)
+		c.JSON(http.StatusTooManyRequests, ErrorResponse{Error: ErrRateLimitExceeded})
+		return
+	}
 
 	logger.Infof("Processing faucet request for address: %s", userAddress)
 

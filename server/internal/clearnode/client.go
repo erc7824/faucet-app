@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/erc7824/nitrolite/pkg/core"
 	"github.com/erc7824/nitrolite/pkg/sign"
@@ -22,31 +24,17 @@ type TransferResult struct {
 
 // Client wraps the Nitrolite SDK client for faucet operations.
 type Client struct {
-	sdkClient        *sdk.Client
-	privateKeyHex    string
-	clearnodeURL     string
+	mu           sync.RWMutex
+	sdkClient    *sdk.Client
+	newSDKClient func() (*sdk.Client, error) // captures parsed signers; no raw key hex stored
+
 	tokenSymbol      string
 	tipAmount        decimal.Decimal
 	minTransferCount int
 }
 
 func NewClient(privateKeyHex, clearnodeURL, tokenSymbol string, tipAmount decimal.Decimal, minTransferCount int) (*Client, error) {
-	sdkClient, err := createSDKClient(privateKeyHex, clearnodeURL)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Client{
-		sdkClient:        sdkClient,
-		privateKeyHex:    privateKeyHex,
-		clearnodeURL:     clearnodeURL,
-		tokenSymbol:      tokenSymbol,
-		tipAmount:        tipAmount,
-		minTransferCount: minTransferCount,
-	}, nil
-}
-
-func createSDKClient(privateKeyHex, clearnodeURL string) (*sdk.Client, error) {
+	// Parse signers once — raw key hex is used here and not retained on the struct.
 	msgSigner, err := sign.NewEthereumMsgSigner(privateKeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create message signer: %w", err)
@@ -62,33 +50,68 @@ func createSDKClient(privateKeyHex, clearnodeURL string) (*sdk.Client, error) {
 		return nil, fmt.Errorf("failed to create tx signer: %w", err)
 	}
 
-	sdkClient, err := sdk.NewClient(clearnodeURL, stateSigner, txSigner)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Clearnode: %w", err)
+	// factory captures already-parsed signers so reconnects don't need the raw key.
+	factory := func() (*sdk.Client, error) {
+		cl, err := sdk.NewClient(clearnodeURL, stateSigner, txSigner)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to Clearnode: %w", err)
+		}
+		return cl, nil
 	}
 
-	return sdkClient, nil
+	sdkClient, err := factory()
+	if err != nil {
+		return nil, err
+	}
+
+	return &Client{
+		sdkClient:        sdkClient,
+		newSDKClient:     factory,
+		tokenSymbol:      tokenSymbol,
+		tipAmount:        tipAmount,
+		minTransferCount: minTransferCount,
+	}, nil
 }
 
 // GetOwnerAddress returns the faucet owner's Ethereum address.
 func (c *Client) GetOwnerAddress() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.sdkClient.GetUserAddress()
 }
 
 // EnsureConnected checks the connection and reconnects if necessary.
 func (c *Client) EnsureConnected() error {
+	// Fast path: read WaitCh under read lock.
+	c.mu.RLock()
+	waitCh := c.sdkClient.WaitCh()
+	c.mu.RUnlock()
+
+	select {
+	case <-waitCh:
+		// Connection lost; fall through to reconnect.
+	default:
+		return nil
+	}
+
+	// Slow path: write lock with double-check to prevent thundering-herd reconnects.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	select {
 	case <-c.sdkClient.WaitCh():
-		logger.Info("Connection lost, reconnecting to Clearnode...")
-		newClient, err := createSDKClient(c.privateKeyHex, c.clearnodeURL)
-		if err != nil {
-			return fmt.Errorf("failed to reconnect: %w", err)
-		}
-		c.sdkClient = newClient
-		logger.Info("Successfully reconnected to Clearnode")
+		// Still disconnected; reconnect now.
 	default:
-		// Connection is active
+		return nil // Another goroutine already reconnected while we waited for the lock.
 	}
+
+	logger.Info("Connection lost, reconnecting to Clearnode...")
+	newClient, err := c.newSDKClient()
+	if err != nil {
+		return fmt.Errorf("failed to reconnect: %w", err)
+	}
+	c.sdkClient = newClient
+	logger.Info("Successfully reconnected to Clearnode")
 	return nil
 }
 
@@ -105,10 +128,17 @@ func (c *Client) EnsureOperational() error {
 	return nil
 }
 
-func (c *Client) validateTokenSupport(tokenSymbol string) error {
-	ctx := context.Background()
+const sdkCallTimeout = 30 * time.Second
 
-	assets, err := c.sdkClient.GetAssets(ctx, nil)
+func (c *Client) validateTokenSupport(tokenSymbol string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCallTimeout)
+	defer cancel()
+
+	c.mu.RLock()
+	cl := c.sdkClient
+	c.mu.RUnlock()
+
+	assets, err := cl.GetAssets(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to fetch supported assets: %w", err)
 	}
@@ -124,10 +154,16 @@ func (c *Client) validateTokenSupport(tokenSymbol string) error {
 }
 
 func (c *Client) validateFaucetBalance(tokenSymbol string, tipAmount decimal.Decimal, minTransferCount int) error {
-	ctx := context.Background()
-	ownerAddress := c.sdkClient.GetUserAddress()
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCallTimeout)
+	defer cancel()
 
-	balances, err := c.sdkClient.GetBalances(ctx, ownerAddress)
+	c.mu.RLock()
+	cl := c.sdkClient
+	c.mu.RUnlock()
+
+	ownerAddress := cl.GetUserAddress()
+
+	balances, err := cl.GetBalances(ctx, ownerAddress)
 	if err != nil {
 		return fmt.Errorf("failed to fetch faucet balance: %w", err)
 	}
@@ -151,9 +187,14 @@ func (c *Client) validateFaucetBalance(tokenSymbol string, tipAmount decimal.Dec
 
 // Transfer sends tokens to the destination address.
 func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*TransferResult, error) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), sdkCallTimeout)
+	defer cancel()
 
-	state, err := c.sdkClient.Transfer(ctx, destination, asset, amount)
+	c.mu.RLock()
+	cl := c.sdkClient
+	c.mu.RUnlock()
+
+	state, err := cl.Transfer(ctx, destination, asset, amount)
 	if err != nil {
 		return nil, fmt.Errorf("transfer failed: %w", err)
 	}
@@ -176,5 +217,7 @@ func (c *Client) Transfer(destination, asset string, amount decimal.Decimal) (*T
 
 // Close shuts down the Clearnode connection.
 func (c *Client) Close() error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.sdkClient.Close()
 }
